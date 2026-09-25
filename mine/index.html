@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Core Miner</title>
+<meta name="description" content="A one-screen idle drill. Buy rigs, keep payback honest, dig to the core and prestige.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#07090d;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#0c1017}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.2% 3%;font-size:17px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px #000}
+#hud .rate{color:#57d38c}
+#mute,#reset{position:absolute;top:8%;padding:1% 2%;border:0;border-radius:9px;background:rgba(12,16,23,.8);
+  color:#e8ecf4;font-size:14px;cursor:pointer}
+#mute{right:1.5%}#reset{left:1.5%}
+#hint{position:absolute;left:0;right:0;bottom:12%;text-align:center;font-size:min(4.2vw,18px);color:#cfd8ea;pointer-events:none}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(7,9,13,.88);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(4.6vw,20px);color:#cfd8ea}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="420" height="640"></canvas>
+  <div id="hud"><span>ORE <b id="o">0</b></span><span class="rate"><b id="r">0</b>/s</span><span>DEPTH <b id="d">0</b>m</span></div>
+  <div id="hint">TAP the rock to dig. Buy rigs below.</div>
+  <div id="over"><h2>CORE REACHED</h2><p class="stats" id="stats"></p><p class="hint" style="color:#9aa6bd">TAP or SPACE to prestige</p></div>
+</div>
+<script>
+"use strict";
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ oEl=document.getElementById("o"),rEl=document.getElementById("r"),dEl=document.getElementById("d"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),hintEl=document.getElementById("hint");
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+function fmt(n){if(n<1000)return ""+(Math.round(n*10)/10);const u=["k","M","B","T"];let i=-1;
+  while(n>=1000&&i<u.length-1){n/=1000;i++}return (Math.round(n*100)/100)+u[i]}
+// Payback at first purchase must fall then rise gently (30/28/38/54/71s) so every
+// tier is worth owning at some point in one session.
+const RIGS=[{name:"Hand cart",base:15,mult:1.15,rate:0.5},{name:"Rail rig",base:110,mult:1.16,rate:4},
+ {name:"Belt drill",base:1200,mult:1.17,rate:32},{name:"Steam bore",base:14000,mult:1.18,rate:260},
+ {name:"Magma cut",base:88000,mult:1.19,rate:2200}];
+const CORE=2500, GROW=1.12, PATIENCE=240;
+let W=0,H=0,PIX=1,BTN=[];
+function layout(){const aw=innerWidth,ah=innerHeight;let h=Math.min(ah,900),w=h*0.656;
+  if(w>aw){w=aw;h=w/0.656}W=Math.round(w);H=Math.round(h);PIX=H/640;
+  cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+  document.documentElement.style.fontSize=Math.max(13,Math.round(16*PIX))+"px";
+  BTN=RIGS.map((r,i)=>({x:W*0.06,y:H*0.52+i*H*0.083,w:W*0.88,h:H*0.072,i}));draw()}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.code))e.preventDefault();
+ if(e.code==="Space"&&sim.state==="won")sim.prestige()},{passive:false});
+
+const SFXN=["dig","buy","win"];const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,bufs={},muted=store("cm_muted")==="1";
+const muteEl=document.createElement("button");muteEl.id="mute";muteEl.type="button";
+const resetEl=document.createElement("button");resetEl.id="reset";resetEl.type="button";resetEl.textContent="RESET";
+document.getElementById("wrap").appendChild(muteEl);document.getElementById("wrap").appendChild(resetEl);
+function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
+function audioWake(){if(actx||!AC)return;try{actx=new AC();for(const n of SFXN)
+  fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>bufs[n]=a).catch(()=>{})}catch(e){actx=null}}
+function sfx(n,v){if(muted||!actx||!bufs[n])return;try{const s=actx.createBufferSource(),g=actx.createGain();
+ s.buffer=bufs[n];g.gain.value=v===undefined?0.4:v;s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("cm_muted",muted?"1":"0");renderMute()});
+resetEl.addEventListener("click",e=>{e.stopPropagation();sim.hard()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden)sim.state==="running"&&sim.pauseGame()});
+cv.addEventListener("pointerdown",e=>{e.preventDefault();sim.click(e)},{passive:false});
+
+const sim={
+  ore:0,total:0,depth:0,owned:[0,0,0,0,0],prestiges:0,mult:1,state:"ready",
+  best:+(store("cm_best")||0),ticks:0,spends:0,lastBuy:null,
+  cost(i){return Math.ceil(RIGS[i].base*Math.pow(RIGS[i].mult,this.owned[i]))},
+  rate(){let s=0;for(let i=0;i<RIGS.length;i++)s+=RIGS[i].rate*this.owned[i];return s*this.mult},
+  payback(i){return this.cost(i)/RIGS[i].rate},           // ore per second it adds
+  buy(i){const c=this.cost(i);if(this.ore<c)return false;this.ore-=c;this.owned[i]++;this.spends++;
+    this.ticks++;this.lastBuy={i,cost:c,payback:this.payback(i)};sfx("buy",0.4);this.state="running";hintEl.style.display="none";return true},
+  dig(){const g=1+this.owned[0]*0.5;this.ore+=g*this.mult;this.total+=g*this.mult;this.depth+=g*this.mult*0.02;
+    if(this.depth>=CORE)this.reach();else sfx("dig",0.25)},
+  reach(){this.state="won";sdkEvent("GameplayEnd");
+    if(this.total>this.best){this.best=this.total;store("cm_best",String(this.total))}
+    stEl.textContent="TOTAL "+fmt(this.total)+" ORE  ·  PRESTIGE "+this.prestiges;overEl.classList.add("on");
+    sfx("win",0.5);try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}},
+  prestige(){if(this.state!=="won")return;this.prestiges++;this.mult=1+0.5*this.prestiges;
+    this.ore=0;this.depth=0;this.owned=[0,0,0,0,0];this.state="running";overEl.classList.remove("on");sdkEvent("GameplayStart")},
+  pauseGame(){if(this.state==="running"){this.state="paused";sdkEvent("GameplayEnd")}},
+  resume(){if(this.state==="paused"){this.state="running";sdkEvent("GameplayStart")}},
+  hard(){this.prestiges=0;this.mult=1;this.ore=0;this.total=0;this.depth=0;this.owned=[0,0,0,0,0];
+    this.state="ready";sdkEvent("LoadingStop");overEl.classList.remove("on")},
+  start(){if(this.state==="ready"){this.state="running";sdkEvent("GameplayStart")}},
+  tick(sec){if(this.state!=="running")return;const g=this.rate()*sec;this.ore+=g;this.total+=g;
+    this.depth+=g*0.02;if(this.depth>=CORE)this.reach()},
+  // Greedy-optimal bot: always afford the shortest-payback rig. Used by the
+  // economy assertions, never shipped as a player feature.
+  // A bot that only buys would stall forever: at zero rigs the *only* income is
+  // manual digging, which is also the game's onboarding gate. Model a human hand
+  // (4 digs/s) so the economy assertion measures the real early game.
+  optimal(horizonSec){let sec=0;const steps=[];let won=false;
+    while(sec<horizonSec&&this.state==="running"){
+      // A real player saves rather than buying a three-hour payback: cap the
+      // patience and the economy has to justify itself.
+      let bi=-1,bp=Infinity;for(let i=0;i<RIGS.length;i++){if(this.ore>=this.cost(i)){const pb=this.payback(i);if(pb<bp){bp=pb;bi=i}}}
+      if(bi>=0&&bp<=PATIENCE){this.buy(bi);steps.push({sec:+sec.toFixed(1),rig:bi,payback:+bp.toFixed(2)})}
+      else for(let k=0;k<2;k++)this.dig();
+      this.tick(0.25);sec+=0.25;if(this.state==="won")won=true}
+    return {steps,bought:this.spends,depth:+this.depth.toFixed(1),total:this.total,won:won||this.state==="won",
+      state:this.state,firstBuy:steps.length?steps[0].sec:null}},
+  tapTo(e){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+    for(const b of BTN)if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)return this.buy(b.i);
+    this.dig();return true},
+  probe(){return {state:this.state,ore:+this.ore.toFixed(1),depth:+this.depth.toFixed(1),total:+this.total.toFixed(1),
+    rate:+this.rate().toFixed(2),owned:this.owned.slice(),prestiges:this.prestiges,mult:this.mult,best:this.best,
+    costs:RIGS.map((r,i)=>this.cost(i)),paybacks:RIGS.map((r,i)=>+this.payback(i).toFixed(2)),
+    fps:Math.round(fps),stage:[W,H],btns:BTN.map(b=>({i:b.i,x:b.x,y:b.y,w:b.w,h:b.h}))}}
+};
+sim.click=sim.tapTo;                          // pointer routing goes through the buttons
+let frames=0,t0=null,acc=0,last=performance.now(),fps=0;
+function draw(){
+  cx.fillStyle="#0c1017";cx.fillRect(0,0,W,H);
+  const rockH=H*0.42,prog=Math.min(1,sim.depth/CORE);
+  cx.fillStyle="#18202c";cx.fillRect(W*0.08,H*0.09,W*0.84,rockH);
+  cx.fillStyle="#2b3a52";cx.fillRect(W*0.08,H*0.09,W*0.84,rockH*prog);
+  cx.fillStyle="#ffd166";cx.fillRect(W*0.08,H*0.09+rockH*prog,W*0.84,3);
+  cx.fillStyle="#5cc8ff";cx.font="700 "+Math.round(W*0.075)+"px system-ui";cx.textAlign="center";
+  cx.fillText(Math.floor(prog*CORE)+"m",W/2,H*0.09+rockH*0.55);
+  RIGS.forEach((r,i)=>{const b=BTN[i];if(!b)return;const afford=sim.ore>=sim.cost(i);
+    cx.fillStyle=afford?"#16321f":"#141a24";cx.fillRect(b.x,b.y,b.w,b.h);
+    cx.strokeStyle=afford?"#57d38c":"#242f3d";cx.lineWidth=1.5;cx.strokeRect(b.x,b.y,b.w,b.h);
+    cx.textAlign="left";cx.fillStyle="#e8ecf4";cx.font="600 "+Math.round(W*0.045)+"px system-ui";
+    cx.fillText(r.name+" ×"+sim.owned[i],b.x+b.w*0.05,b.y+b.h*0.62);
+    cx.textAlign="right";cx.fillStyle=afford?"#ffd166":"#5b6a80";
+    cx.fillText(fmt(sim.cost(i)),b.x+b.w*0.95,b.y+b.h*0.62)});
+  oEl.textContent=fmt(sim.ore);rEl.textContent=fmt(sim.rate());dEl.textContent=Math.floor(sim.depth)}
+function loop(now){if(t0===null)t0=now;frames++;
+  const dt=Math.min(now-last,250)/1000;last=now;
+  if(sim.state==="running")sim.tick(dt);
+  draw();
+  if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
+  requestAnimationFrame(loop)}
+window.__game=sim;sim.hard();layout();renderMute();requestAnimationFrame(loop);
+</script></body></html>
