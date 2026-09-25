@@ -2,47 +2,43 @@
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
-<title>Flow Lines</title>
-<meta name="description" content="Rotate the pipes and fill every node. Levels are generated from a spanning tree, so each one is solvable by construction.">
+<title>Path Lock</title>
+<meta name="description" content="Tap the numbers in order, stepping only to a neighbouring cell. Every board is generated with exactly one valid path.">
 <script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
-html,body{width:100%;height:100%;overflow:hidden;background:#06090f;
+html,body{width:100%;height:100%;overflow:hidden;background:#05080e;
   font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
 #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
-canvas{display:block;background:#0b1220}
+canvas{display:block;background:#0a1018}
 #hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
   padding:2.4% 3%;font-size:18px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;
   text-shadow:0 1px 3px #000}
-#hud .leak{color:#ff7b72}
-#hint{position:absolute;left:0;right:0;bottom:14%;text-align:center;font-size:min(4.5vw,19px);
+#hud .miss{color:#ff7b72}
+#hint{position:absolute;left:0;right:0;bottom:13%;text-align:center;font-size:min(4.5vw,19px);
   color:#cfd8ea;pointer-events:none;text-shadow:0 1px 3px #000}
 #over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
-  gap:10px;background:rgba(6,9,15,.86);text-align:center;padding:6%}
+  gap:10px;background:rgba(5,8,14,.87);text-align:center;padding:6%}
 #over.on{display:flex}
 #over h2{font-size:min(8vw,40px);margin:0}
 #over .stats{font-size:min(5vw,21px);color:#cfd8ea}
 #over .hint{font-size:min(4vw,17px);color:#9aa6bd}
-#mute,#undo,#hintbtn{position:absolute;top:1.5%;padding:1.2% 2.2%;border:0;border-radius:9px;background:rgba(13,18,32,.78);color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute,#undo,#hintbtn{position:absolute;top:1.5%;padding:1.2% 2.2%;border:0;border-radius:9px;
+  background:rgba(13,18,32,.78);color:#e8ecf4;font-size:15px;cursor:pointer}
 #mute{right:1.5%}#undo{left:1.5%}#hintbtn{left:20%}
 button{min-height:44px;min-width:44px}
 </style></head>
 <body>
 <div id="wrap">
   <canvas id="cv" width="480" height="640"></canvas>
-  <div id="hud"><span>LEVEL <b id="l">1</b></span><span>MOVES <b id="m">0</b></span><span class="leak">LEAKS <b id="k">0</b></span></div>
-  <div id="hint">TAP a pipe to rotate it. Fill every node with no leaks.</div>
-  <div id="over"><h2 id="oht">ALL NODES FILLED</h2><p class="stats" id="stats"></p><p class="hint">TAP or SPACE for the next level</p></div>
+  <div id="hud"><span>LEVEL <b id="l">1</b></span><span>PATH <b id="p">0/0</b></span><span class="miss">MISS <b id="m">0</b></span></div>
+  <div id="hint">Tap 1, then step to each next number in a neighbouring cell.</div>
+  <div id="over"><h2 id="oht">PATH LOCKED</h2><p class="stats" id="stats"></p><p class="hint">TAP or SPACE for the next board</p></div>
 </div>
 <script>
 "use strict";
-const U=1,R=2,D=4,L=8;
-// Keys are the bit values, not the identifier names: {U:0} would be the string
-// key "U" and every DX[d] lookup would silently return undefined.
-const OPP={[U]:D,[D]:U,[R]:L,[L]:R},DX={[U]:0,[R]:1,[D]:0,[L]:-1},DY={[U]:-1,[R]:0,[D]:1,[L]:0};
-function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
- lEl=document.getElementById("l"),mEl=document.getElementById("m"),kEl=document.getElementById("k"),
+ lEl=document.getElementById("l"),pEl=document.getElementById("p"),mEl=document.getElementById("m"),
  overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
 const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
 function adBreak(kind){try{window.__adRequests=(window.__adRequests||0)+1;if(!(CG&&CG.SDK&&CG.SDK.ad&&typeof CG.SDK.ad.requestAd==="function"))return false;CG.SDK.ad.requestAd(kind,{adStarted:function(){window.__adState="started";try{if(actx&&actx.state==="running"){actx.suspend();window.__mutedForAd=true;}}catch(e){}},adFinished:function(){window.__adState="finished";try{if(actx&&window.__mutedForAd&&!muted){actx.resume();}window.__mutedForAd=false;}catch(e){}},adError:function(){window.__adState="error";try{if(actx&&window.__mutedForAd&&!muted){actx.resume();}window.__mutedForAd=false;}catch(e){}}});return true;}catch(e){window.__adState="threw";return false;}}
@@ -54,149 +50,152 @@ function layout(){
   let h=Math.min(ah,900),w=h*0.75;if(w>aw){w=aw;h=w/0.75}
   W=Math.round(w);H=Math.round(h);PIX=H/640;
   cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
-  document.documentElement.style.fontSize=Math.max(14,Math.round(17*PIX))+"px";
-  fit();draw()}
-function fit(){if(!sim.grid)return;CELL=Math.floor(Math.min(W,H*0.72)/sim.n);OX=Math.round((W-CELL*sim.n)/2);OY=Math.round((H-CELL*sim.n)/2)}
+  document.documentElement.style.fontSize=Math.max(14,Math.round(17*PIX))+"px";fit();draw()}
+function fit(){if(!sim.vals)return;const avail=Math.min(W*0.94,H*0.68);CELL=Math.floor(avail/sim.n);
+ OX=Math.round((W-CELL*sim.n)/2);OY=Math.round((H-CELL*sim.n)/2)+Math.round(H*0.03)}
 addEventListener("resize",layout);
 addEventListener("wheel",e=>e.preventDefault(),{passive:false});
 addEventListener("keydown",e=>{
-  if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code))e.preventDefault();
-  if(e.code==="Space"&&sim.state==="won")sim.next()},{passive:false});
+ if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code))e.preventDefault();
+ if(e.code==="Space"&&sim.state==="won")sim.next()},{passive:false});
 cv.addEventListener("pointerdown",e=>{e.preventDefault();sim.tap(e)},{passive:false});
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+// Orthogonality needs the grid width: a vertical neighbour differs by n, not by a
+// literal 10, and a horizontal one only counts inside the same row.
+function orth(a,b,n){n=n||(typeof sim!=="undefined"&&sim.n)||5;const d=Math.abs(a-b);
+  return d===n||(d===1&&Math.floor(a/n)===Math.floor(b/n))}
 
-function rot(mask,times){let m=mask;for(let i=0;i<((times%4)+4)%4;i++){
-  let n=0;if(m&U)n|=R;if(m&R)n|=D;if(m&D)n|=L;if(m&L)n|=U;m=n}return m}
-
-
-const SFXN=["rot","win"];
-const AC=window.AudioContext||window.webkitAudioContext;
-let actx=null,bufs={},muted=store("fl_muted")=="1",shake=0;
-const muteEl=document.createElement("button");
-muteEl.id="mute";muteEl.type="button";muteEl.setAttribute("aria-label","toggle sound");
-document.getElementById("wrap").appendChild(muteEl);
+const sim={
+ n:5,len:9,level:1,seed:1,state:"ready",vals:null,path:[],pos:0,misses:0,
+ hist:[],hinted:-1,best:+(store("pl_best")||0),solutions:1,deadEnds:0,
+ // A self-avoiding random walk is carved first, so the intended path exists by
+ // construction. Decoys are then chosen so the exhaustive count below stays 1:
+ // uniqueness is asserted, not hoped for.
+ gen(seed,level){
+  this.seed=seed;this.level=level;this.count_=null;   // stale counts suppressed regeneration entirely
+  this.n=Math.min(8,5+Math.floor((level-1)/4));
+  this.len=Math.min(this.n*this.n-6,8+Math.floor((level-1)*1.5));
+  const n=this.n,N=n*n;
+  for(let attempt=0;attempt<400;attempt++){
+   const rnd=rng32(seed*2246822519+level*3266489917+attempt*7919);
+   const used=new Array(N).fill(false),path=[];
+   let cur=(Math.floor(rnd()*n))*n+Math.floor(rnd()*n);
+   used[cur]=true;path.push(cur);
+   while(path.length<this.len){
+    const x=cur%n,y=Math.floor(cur/n),opts=[];
+    if(x>0&&!used[cur-1])opts.push(cur-1);
+    if(x<n-1&&!used[cur+1])opts.push(cur+1);
+    if(y>0&&!used[cur-n])opts.push(cur-n);
+    if(y<n-1&&!used[cur+n])opts.push(cur+n);
+    if(!opts.length)break;
+    cur=opts[Math.floor(rnd()*opts.length)];used[cur]=true;path.push(cur)}
+   if(path.length<this.len)continue;
+   const vals=new Array(N).fill(0);
+   path.forEach((c,i)=>vals[c]=i+1);
+   // Ambiguity only arises from decoys inside 1..len, so the last attempts use
+   // values above len: such a cell can never extend the chain, which makes the
+   // board unique by construction instead of by luck.
+   const safe=attempt>=200;
+   for(let i=0;i<N;i++)if(!vals[i])vals[i]=safe?(this.len+1+Math.floor(rnd()*9)):(1+Math.floor(rnd()*Math.min(9,this.len)));
+   const counted=this.count(vals,path);
+   if(counted.total===1){this.vals=vals;this.path=path.slice();this.pathLen=path.length;this.count_=counted;break}}
+  if(!this.count_){this.genSafeFallback()}   // exhausted retries: guaranteed-unique decoys
+  this.state="ready";this.pos=0;this.misses=0;this.hist=[];this.hinted=-1;
+  this.solutions=this.count_.total;this.deadEnds=this.count_.deadEnds;
+  fit();sdkEvent("LoadingStop");return this},
+ // Exhaustive count of strictly-increasing orthogonal walks from a "1" to "len".
+ count(vals,path){
+  // Neighbours are derived from the grid width. The previous version encoded a
+  // vertical step as 10 and filtered with an orth() that also assumed 10, so on a
+  // 5x5 board it never saw a vertical step at all and every uniqueness count was 0.
+  const n=this.n,N=n*n,target=this.pathLen||this.len;
+  let total=0,deadEnds=0;
+  const starts=[];for(let i=0;i<N;i++)if(vals[i]===1)starts.push(i);
+  const step=(cell,k)=>{
+   if(k===target){total++;return}
+   let branched=false;
+   const x=cell%n,y=Math.floor(cell/n),cand=[];
+   if(x>0)cand.push(cell-1);
+   if(x<n-1)cand.push(cell+1);
+   if(y>0)cand.push(cell-n);
+   if(y<n-1)cand.push(cell+n);
+   for(const j of cand) if(j>=0&&j<N&&vals[j]===k+1&&orth(cell,j,n)){branched=true;step(j,k+1)}
+   if(!branched)deadEnds++};
+  for(const st of starts)step(st,1);
+  return {total:total,deadEnds:deadEnds,starts:starts.length}},
+ tap(e){
+  if(this.state==="won"){this.next();return}
+  if(this.state==="ready")this.start();
+  const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+  const c=Math.floor((x-OX)/CELL),row=Math.floor((y-OY)/CELL);
+  if(c<0||row<0||c>=this.n||row>=this.n)return;
+  const i=row*this.n+c,want=this.path[this.pos];
+  this.hist.push({pos:this.pos,misses:this.misses});
+  if(i!==want){this.misses++;this.state="ready";this.start();draw();return}
+  this.pos++;hintEl.style.display="none";
+  if(this.pos>=this.path.length)this.win();draw()},
+ win(){
+  this.state="won";sdkEvent("GameplayEnd");
+  const score=this.level*1000+this.n*100-this.misses*25;
+  if(score>this.best){this.best=score;store("pl_best",String(score))}
+  oht.textContent="PATH LOCKED";stEl.textContent="LEVEL "+this.level+"  ·  "+this.pos+" STEPS  ·  MISSES "+this.misses+"  ·  SCORE "+score;
+  overEl.classList.add("on");
+  try{if(CG&&CG.SDK&&CG.SDK.ad)adBreak("midgame")}catch(e){}},
+ start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+ next(){overEl.classList.remove("on");this.gen(this.seed,this.level+1);this.start();draw()},
+ undo(){if(!this.hist.length)return;const h=this.hist.pop();this.pos=h.pos;this.misses=h.misses;this.state="running";draw()},
+ hint(){if(this.pos>=this.path.length)return;this.hinted=this.path[this.pos];draw();return {tile:this.hinted}},
+ genSafeFallback(){ // guaranteed-unique board: decoys numbered above the path length
+  const n=this.n,N=n*n,rnd=rng32(this.seed*1000003+this.level*17+99991);
+  const used=new Array(N).fill(false),path=[];let cur=Math.floor(rnd()*n)*n+Math.floor(rnd()*n);
+  used[cur]=true;path.push(cur);
+  while(path.length<this.len){const x=cur%n,y=Math.floor(cur/n),o=[];
+   if(x>0&&!used[cur-1])o.push(cur-1);if(x<n-1&&!used[cur+1])o.push(cur+1);
+   if(y>0&&!used[cur-n])o.push(cur-n);if(y<n-1&&!used[cur+n])o.push(cur+n);
+   if(!o.length)break;cur=o[Math.floor(rnd()*o.length)];used[cur]=true;path.push(cur)}
+  const vals=new Array(N).fill(0);path.forEach((c,i)=>vals[c]=i+1);
+  for(let i=0;i<N;i++)if(!vals[i])vals[i]=this.len+1+Math.floor(rnd()*9);
+  this.vals=vals;this.path=path;this.pathLen=path.length;this.count_=this.count(vals,path)},
+ probe(){return {state:this.state,level:this.level,n:this.n,len:this.len,pos:this.pos,
+  misses:this.misses,pathLen:this.path.length,solutions:this.solutions,deadEnds:this.deadEnds,
+  best:this.best,fps:Math.round(fps),stage:[W,H]}}
+};
+function draw(){
+ cx.fillStyle="#0a1018";cx.fillRect(0,0,W,H);
+ if(!sim.vals)return;
+ const fs=Math.round(CELL*0.42);cx.font="700 "+fs+"px system-ui,sans-serif";
+ cx.textAlign="center";cx.textBaseline="middle";
+ for(let i=0;i<sim.vals.length;i++){
+  const x=OX+(i%sim.n)*CELL,y=OY+Math.floor(i/sim.n)*CELL,isPath=sim.path.indexOf(i)>=0;
+  const done=isPath&&sim.path.indexOf(i)<sim.pos;
+  cx.fillStyle=done?"#123145":(i===sim.hinted?"#1d3a2c":"#101a28");
+  cx.fillRect(x+2,y+2,CELL-4,CELL-4);
+  cx.fillStyle=done?"#5cc8ff":(isPath?"#e8ecf4":"#4a5a72");
+  cx.fillText(String(sim.vals[i]),x+CELL/2,y+CELL/2);
+  if(done&&sim.pos>0){const p=sim.path.indexOf(i);
+   if(p>0){const px=OX+(sim.path[p-1]%sim.n)*CELL+CELL/2,py=OY+Math.floor(sim.path[p-1]/sim.n)*CELL+CELL/2;
+    cx.strokeStyle="#57d38c";cx.lineWidth=Math.max(2,CELL*0.06);
+    cx.beginPath();cx.moveTo(px,py);cx.lineTo(x+CELL/2,y+CELL/2);cx.stroke()}}}
+ lEl.textContent=sim.level;pEl.textContent=sim.pos+"/"+sim.path.length;mEl.textContent=sim.misses}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){if(t0===null)t0=now;frames++;last=now;
+ if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}requestAnimationFrame(loop)}
+const SFXN=["click","win"];const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,bufs={},muted=store("pl_muted")==="1";
+const muteEl=document.createElement("button");muteEl.id="mute";muteEl.type="button";muteEl.setAttribute("aria-label","toggle sound");
+const undoEl=document.createElement("button");undoEl.id="undo";undoEl.type="button";undoEl.textContent="UNDO";
+const hintBtn=document.createElement("button");hintBtn.id="hintbtn";hintBtn.type="button";hintBtn.textContent="HINT";
+document.getElementById("wrap").appendChild(muteEl);document.getElementById("wrap").appendChild(undoEl);document.getElementById("wrap").appendChild(hintBtn);
+function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
 function audioWake(){if(actx||!AC)return;try{actx=new AC();
  for(const n of SFXN)fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>bufs[n]=a).catch(()=>{})}catch(e){actx=null}}
 function sfx(n,v){if(muted||!actx||!bufs[n])return;try{const s=actx.createBufferSource(),g=actx.createGain();
  s.buffer=bufs[n];g.gain.value=v===undefined?0.5:v;s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
-function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
-muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("fl_muted",muted?"1":"0");renderMute()});
-addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
-document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.pause()});
-
-const undoEl=document.createElement("button");undoEl.id="undo";undoEl.type="button";undoEl.textContent="UNDO";
-const hintBtn=document.createElement("button");hintBtn.id="hintbtn";hintBtn.type="button";hintBtn.textContent="HINT";
-document.getElementById("wrap").appendChild(undoEl);document.getElementById("wrap").appendChild(hintBtn);
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("pl_muted",muted?"1":"0");renderMute()});
 undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
 hintBtn.addEventListener("click",e=>{e.stopPropagation();sim.hint()});
-const sim={
-  n:5,level:1,seed:1,state:"ready",grid:null,sol:null,src:0,bulbs:[],moves:0,totalMoves:0,
-  best:+(store("fl_best")||0),
-  // Levels are carved as a random spanning tree, so the un-rotated configuration
-  // is always a solution; the scramble only rotates tiles, which the player can
-  // undo. Generation and the win test are then cross-checked against each other.
-  gen(seed,level){
-    this.seed=seed;this.level=level;
-    this.n=Math.min(9,5+Math.floor((level-1)/3));
-    const rnd=rng32(seed*2654435761+level*40503),n=this.n,N=n*n;
-    const sol=new Array(N).fill(0),seen=new Array(N).fill(false),stack=[];
-    this.src=Math.floor(n/2)*n+0;
-    seen[this.src]=true;stack.push(this.src);
-    while(stack.length){
-      const cur=stack[stack.length-1],cxp=cur%n,cyp=Math.floor(cur/n),nbrs=[];
-      if(cyp>0)nbrs.push([cur-n,U,D]);
-      if(cyp<n-1)nbrs.push([cur+n,D,U]);
-      if(cxp>0)nbrs.push([cur-1,L,R]);
-      if(cxp<n-1)nbrs.push([cur+1,R,L]);
-      let moved=false;
-      for(let i=nbrs.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));const t=nbrs[i];nbrs[i]=nbrs[j];nbrs[j]=t}
-      for(const [nb,a,b] of nbrs) if(!seen[nb]){seen[nb]=true;sol[cur]|=a;sol[nb]|=b;stack.push(nb);moved=true}
-      if(!moved)stack.pop()}
-    this.sol=sol;
-    this.bulbs=[];for(let i=0;i<N;i++)if(i!==this.src&&(sol[i]&(sol[i]-1))===0)this.bulbs.push(i);
-    let scram=0;this.grid=sol.map((m,i)=>{const t=Math.floor(rnd()*4);if(t!==0)scram++;return rot(m,t)});
-    this.scrambledTiles=scram;this.moves=0;this.hist=[];this.hinted=null;this.state="ready";sdkEvent("LoadingStop");fit();return this},
-  pushHist(i){this.hist.push({i,before:this.grid[i],leaks:this.leaks});if(this.hist.length>400)this.hist.shift()},
-  undo(){if(!this.hist||!this.hist.length||this.state==="won")return;const h=this.hist.pop();
-    this.grid[h.i]=h.before;this.moves=Math.max(0,this.moves-1);this.totalMoves=Math.max(0,this.totalMoves-1);
-    this.hinted=null;this.check();draw();sfx("rot",0.3)},
-  // A hint that just rotates once does not necessarily help; the useful semantic
-  // is "set this tile to its solution orientation", charged at the real click cost.
-  hint(){if(!this.grid)return;const bad=this.grid.map((m,i)=>m!==this.sol[i]?i:-1).filter(i=>i>=0);
-    if(!bad.length)return;let need=0,pick=bad[0];
-    for(const i of bad){for(let t=1;t<4;t++)if(rot(this.grid[i],t)===this.sol[i]){need=t;pick=i;break}}
-    this.hinted=pick;this.pushHist(pick);
-    this.grid[pick]=rot(this.grid[pick],need);this.moves+=need;this.totalMoves+=need;
-    this.check();if(this.state==="won")sfx("win",0.5);else sfx("rot",0.4);draw();
-    return {tile:pick,clicks:need}},
-  tap(e){
-    if(this.state==="won"){this.next();return}
-    if(this.state==="ready")this.start();
-    const x=e.clientX-cv.getBoundingClientRect().left,y=e.clientY-cv.getBoundingClientRect().top;
-    const c=Math.floor((x-OX)/CELL),r=Math.floor((y-OY)/CELL);
-    if(c<0||r<0||c>=this.n||r>=this.n)return;
-    const i=r*this.n+c;this.pushHist(i);
-    this.grid[i]=rot(this.grid[i],1);this.moves++;this.totalMoves++;this.hinted=null;
-    hintEl.style.display="none";sfx("rot",0.3);this.check();
-    if(this.state==="won")sfx("win",0.55);
-    draw()},
-  // Flow fill + leak count, computed from the current masks only.
-  check(){
-    const n=this.n,N=n*n,fill=new Array(N).fill(false),q=[this.src];fill[this.src]=true;
-    let leaks=0;
-    while(q.length){const i=q.pop(),x=i%n,y=Math.floor(i/n),m=this.grid[i];
-      for(const d of [U,R,D,L]){
-        if(!(m&d))continue;
-        const nx=x+DX[d],ny=y+DY[d];
-        if(nx<0||ny<0||nx>=n||ny>=n){leaks++;continue}
-        const j=ny*n+nx;
-        if(this.grid[j]&OPP[d]){if(!fill[j]){fill[j]=true;q.push(j)}}else leaks++}}
-    this.fill=fill;this.leaks=leaks;
-    const lit=this.bulbs.every(b=>fill[b]);
-    if(lit&&leaks===0&&this.state!=="won"){
-      this.state="won";sdkEvent("GameplayEnd");
-      const score=this.level*1000-this.moves*5;if(score>this.best){this.best=score;store("fl_best",String(score))}
-      oht.textContent="ALL NODES FILLED";stEl.textContent="LEVEL "+this.level+"  ·  MOVES "+this.moves+"  ·  SCORE "+score;
-      overEl.classList.add("on");
-      try{if(CG&&CG.SDK&&CG.SDK.ad)adBreak("midgame")}catch(e){}}
-    return {lit,leaks,done:lit&&leaks===0}},
-  start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
-  next(){overEl.classList.remove("on");this.gen(this.seed,this.level+1);this.start();draw()},
-  restart(){this.gen(this.seed,this.level);this.start();draw()},
-  // The generator's promise, restated through the win test itself.
-  verify(){
-    const keep=this.grid.slice();this.grid=this.sol.slice();
-    const r=this.check();const solLeaks=this.leaks,solFilled=this.fill.filter(Boolean).length;
-    const movesToScramble=this.grid.map((m,i)=>{for(let t=0;t<4;t++)if(rot(m,t)===keep[i])return t;return 0});
-    this.grid=keep;this.check();
-    // leaks/filled must be sampled while the solution is still on the board;
-    // reading them after the restore reported the scrambled state instead.
-    return {solutionWin:r.done,leaksAtSolution:solLeaks,filledAtSolution:solFilled,
-      tiles:this.sol.length,nodes:this.bulbs.length,
-      minMoves:movesToScramble.reduce((a,b)=>a+b,0)}},
-  probe(){const v=this.verify();return {state:this.state,level:this.level,n:this.n,
-    tiles:this.n*this.n,nodes:this.bulbs.length,scrambledTiles:this.scrambledTiles,
-    minMoves:v.minMoves,solutionWin:v.solutionWin,leaksAtSolution:v.leaksAtSolution,
-    moves:this.moves,leaks:this.leaks,fps:Math.round(fps),stage:[W,H],best:this.best}}
-};
-function draw(){
-  cx.fillStyle="#0b1220";cx.fillRect(0,0,W,H);
-  if(!sim.grid)return;
-  const lw=Math.max(3,CELL*0.16);
-  for(let i=0;i<sim.grid.length;i++){
-    const x=OX+(i%sim.n)*CELL,y=OY+Math.floor(i/sim.n)*CELL,m=sim.grid[i],lit=sim.fill&&sim.fill[i];
-    cx.strokeStyle=lit?"#5cc8ff":"#2c3a55";cx.lineWidth=lw;cx.lineCap="round";
-    for(const d of [U,R,D,L])if(m&d){cx.beginPath();cx.moveTo(x+CELL/2,y+CELL/2);
-      cx.lineTo(x+CELL/2+DX[d]*CELL/2,y+CELL/2+DY[d]*CELL/2);cx.stroke()}
-    cx.fillStyle=i===sim.src?"#ffd166":(sim.bulbs.indexOf(i)>=0?(lit?"#57d38c":"#33506b"):"#0b1220");
-    cx.beginPath();cx.arc(x+CELL/2,y+CELL/2,lw*0.72,0,6.284);cx.fill()}
-  lEl.textContent=sim.level;mEl.textContent=sim.moves;kEl.textContent=sim.leaks===undefined?0:sim.leaks}
-let frames=0,t0=null,last=performance.now(),fps=0;
-function loop(now){
-  if(t0===null)t0=now;frames++;
-  if(sim.state==="running"){const step=Math.min(now-last,100);void step}
-  last=now;
-  if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
-  requestAnimationFrame(loop)}
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.state="paused"});
 window.__game=sim;
-sim.gen(1,1);sim.check();layout();renderMute();requestAnimationFrame(loop);
+sim.gen(1,1);layout();renderMute();requestAnimationFrame(loop);
 </script></body></html>
