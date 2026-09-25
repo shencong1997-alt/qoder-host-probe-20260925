@@ -43,9 +43,7 @@ function fmt(n){if(n<1000)return ""+(Math.round(n*10)/10);const u=["k","M","B","
   while(n>=1000&&i<u.length-1){n/=1000;i++}return (Math.round(n*100)/100)+u[i]}
 // Payback at first purchase must fall then rise gently (30/28/38/54/71s) so every
 // tier is worth owning at some point in one session.
-const RIGS=[{name:"Hand cart",base:15,mult:1.15,rate:0.5},{name:"Rail rig",base:110,mult:1.16,rate:4},
- {name:"Belt drill",base:1200,mult:1.17,rate:32},{name:"Steam bore",base:14000,mult:1.18,rate:260},
- {name:"Magma cut",base:40000,mult:1.20,rate:2000}];
+// Every tier is dearer and pays back faster (30/28/23/19/15s), so progress is made by saving for the next one rather than by grinding the current one. A tier whose first payback is not the best-so-far is dead content, which the assertion suite checks over a full session plus one prestige loop.const RIGS=[{name:"Hand cart",base:15,mult:1.15,rate:0.5},{name:"Rail rig",base:110,mult:1.16,rate:4},{name:"Belt drill",base:900,mult:1.17,rate:40},{name:"Steam bore",base:6000,mult:1.19,rate:320},{name:"Magma cut",base:40000,mult:1.22,rate:2700}];
 const CORE=2500, GROW=1.12, PATIENCE=240;
 let W=0,H=0,PIX=1,BTN=[];
 function layout(){const aw=innerWidth,ah=innerHeight;let h=Math.min(ah,900),w=h*0.656;
