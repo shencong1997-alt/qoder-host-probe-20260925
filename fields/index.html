@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Deduction Field</title>
+<meta name="description" content="Minesweeper where every board can be finished by logic alone. Boards that would need a guess are never dealt.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0d13;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#101725}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.4% 3%;font-size:17px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px #000}
+#hint{position:absolute;left:0;right:0;bottom:9%;text-align:center;font-size:min(4.4vw,18px);color:#cfd8ea;pointer-events:none}
+#mute,#undo,#flagmode{position:absolute;top:9%;padding:1% 2.2%;border:0;border-radius:9px;background:rgba(16,23,37,.82);
+  color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute{right:1.5%}#undo{left:1.5%}#flagmode{left:18%}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(10,13,19,.9);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(4.6vw,20px);color:#cfd8ea}
+button{min-height:44px;min-width:44px}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="420" height="560"></canvas>
+  <div id="hud"><span>MINES LEFT <b id="s">0</b></span><span>FIELD <b id="x">1</b></span><span>BEST <b id="v">0</b></span></div>
+  <div id="hint">Tap to dig, tap FLAG mode to mark. Numbers count adjacent mines.</div>
+  <button id="undo" type="button">UNDO</button>
+  <button id="flagmode" type="button">FLAG: OFF</button>
+  <button id="mute" type="button">SOUND ON</button>
+  <div id="over"><h2 id="oht">FIELD CLEARED</h2><p class="stats" id="stats"></p><p style="color:#9aa6bd;font-size:min(4vw,17px)">TAP or SPACE for the next field</p></div>
+</div>
+<script>
+"use strict";
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ sEl=document.getElementById("s"),xEl=document.getElementById("x"),vEl=document.getElementById("v"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+
+// ---- board maths ----------------------------------------------------------
+function idx(r,c,w){return r*w+c}
+function adjacents(i,w,h){const r=Math.floor(i/w),c=i%w,out=[];
+  for(let dr=-1;dr<=1;dr++)for(let dc=-1;dc<=1;dc++){if(!dr&&!dc)continue;
+   const nr=r+dr,nc=c+dc;if(nr<0||nc<0||nr>=h||nc>=w)continue;out.push(nr*w+nc)}
+  return out}
+function counts(mines,w,h){return mines.map((m,i)=>m?0:adjacents(i,w,h).filter(j=>mines[j]).length)}
+// Flood-open from a safe cell through zero-count cells, classic rules.
+function openFrom(start,mines,w,h){const cnt=counts(mines,w,h);const seen=new Set([start]);const q=[start];
+  while(q.length){const i=q.pop();if(cnt[i]===0)for(const j of adjacents(i,w,h))if(!mines[j]&&!seen.has(j)){seen.add(j);q.push(j)}}
+  return seen}
+
+// ---- the deduction solver that decides what gets dealt ---------------------
+// One pass of the rules a careful human uses: a clue whose unknown neighbours equal
+// its remaining mines marks them all mined; a clue with nothing left to find marks
+// them all safe; and the subset rule between two overlapping clues. Everything above
+// this line is shared by the generator and the in-game hint, so the hint can never be
+// stronger or weaker than the property the boards are chosen for.
+function passOnce(w,h,mines,cnt,known){let changed=false;const n=w*h;
+ const snapshot=known.slice();
+ const unkOf=i=>{let f=0;const u=[];for(const j of adjacents(i,w,h)){if(snapshot[j]===2)f++;else if(snapshot[j]===0)u.push(j)}return {flags:f,unk:u}};
+ for(let i=0;i<n;i++){if(mines[i]||snapshot[i]!==1)continue;
+  const a1=unkOf(i);if(!a1.unk.length)continue;const need=cnt[i]-a1.flags;
+  if(need===a1.unk.length){for(const j of a1.unk)if(known[j]!==2){known[j]=2;changed=true}}
+  else if(need===0){for(const j of a1.unk)if(known[j]!==1){known[j]=1;changed=true}}
+  else for(const k of adjacents(i,w,h)){if(mines[k]||snapshot[k]!==1)continue;
+   const a2=unkOf(k);if(!a2.unk.length)continue;const need2=cnt[k]-a2.flags;
+   const s1=new Set(a1.unk),s2=new Set(a2.unk);
+   // Subset rule, both directions. Getting this backwards is not a cosmetic bug: it
+   // marks safe cells as mines and silently breaks the "no guessing" guarantee.
+   // If the inner clue's unknowns sit inside the outer one's, then the outer clue's
+   // surplus mines are exactly (needOuter - needInner); when that surplus equals the
+   // size of the difference the extra cells are mines, and when the two needs are
+   // equal the extra cells are safe.
+   const rule=(innerSet,outerArr,needInner,needOuter)=>{
+     if(!outerArr.every(j=>innerSet.has(j))||outerArr.length<=innerSet.size)return;
+     const diff=outerArr.filter(j=>!innerSet.has(j));
+     if(needOuter===needInner)for(const j of diff)if(known[j]!==1){known[j]=1;changed=true}
+     else if(needOuter-needInner===diff.length)for(const j of diff)if(known[j]!==2){known[j]=2;changed=true}};
+   rule(s1,a2.unk,need,need2);
+   rule(s2,a1.unk,need2,need)}}
+ return changed}
+function runDeduction(w,h,mines,revealedSet,maxRounds){const n=w*h,cnt=counts(mines,w,h);
+ const known=new Int8Array(n);for(const i of revealedSet)known[i]=1;
+ let changed=true,rounds=0;
+ while(changed&&rounds++<(maxRounds||800)){changed=passOnce(w,h,mines,cnt,known)}
+ const hidden=[];for(let i=0;i<n;i++)if(known[i]===0)hidden.push(i);
+ return {known:known,hidden:hidden,cnt:cnt,rounds:rounds}}
+// A board is deducible when nothing is left unknown, or every cell still unknown is a
+// mine - the player finishes it by marking the rest, never by guessing.
+function fullyDeducible(w,h,mines,start){const r=runDeduction(w,h,mines,openFrom(start,mines,w,h));
+ return {deducible:r.hidden.every(i=>mines[i]===1),known:r.known,hidden:r.hidden.length,rounds:r.rounds}}
+// Safe cells the current board state proves but that are still covered: what a hint uses.
+function deduce(w,h,mines,revealedSet){const r=runDeduction(w,h,mines,revealedSet);
+ const safe=[];for(let i=0;i<r.known.length;i++)if(r.known[i]===1&&!revealedSet.has(i))safe.push(i);
+ return {safe:safe,known:r.known,hidden:r.hidden}}
+function dealMines(w,h,m,rnd){const mines=new Array(w*h).fill(0);let placed=0;
+  while(placed<m){const i=Math.floor(rnd()*mines.length);if(!mines[i]){mines[i]=1;placed++}}
+  return mines}
+
+const LEVELS=[[6,6,7],[7,7,9],[8,8,11],[9,9,13],[9,11,15],[11,11,18]];
+const sim={
+ seed:1,level:1,w:6,h:6,mines:[],counts:[],known:[],revealed:new Set(),flagMode:false,
+ moves:0,state:"ready",history:[],score:0,best:+store("df_best")||0,tries:0,deducible:false,
+ newBoard(seed){if(seed)this.seed=seed;this.level=1;this.score=0;this.build();
+  this.state="ready";overEl.classList.remove("on");hintEl.style.display="";sdkEvent("LoadingStop");return this},
+ build(){const s=LEVELS[Math.min(this.level-1,LEVELS.length-1)];this.w=s[0];this.h=s[1];
+  const want=s[2];const rnd=rng32(this.seed*2654435761+this.level*40503+17);
+  this.mines=[];this.tries=0;this.deducible=false;
+  for(let drop=0;drop<10&&!this.mines.length;drop++){
+   const want2=Math.max(3,want-drop);
+   for(let attempt=0;attempt<80&&!this.mines.length;attempt++){this.tries++;
+    const m=dealMines(this.w,this.h,want2,rnd);
+    let start=-1;for(let k=0;k<40;k++){const cand=Math.floor(rnd()*m.length);if(!m[cand]){start=cand;break}}
+    if(start<0)continue;
+    // Boards that would force a 50/50 are discarded here rather than handed to the player.
+    const d=fullyDeducible(this.w,this.h,m,start);
+    if(d.deducible){this.mines=m;this.deducible=true;this.start0=start}}}
+  this.counts=counts(this.mines,this.w,this.h);
+  this.known=new Int8Array(this.w*this.h);this.revealed=new Set();
+  this.history=[];this.moves=0;this.dug=0;this.mineCount=this.mines.filter(x=>x).length;
+  this.reveal(this.start0);this.state="ready";
+  sEl.textContent=this.mineCount;xEl.textContent=this.level;vEl.textContent=this.best},
+ reveal(i){if(this.revealed.has(i)||this.mines[i])return false;
+  for(const j of openFrom(i,this.mines,this.w,this.h)){if(!this.revealed.has(j)){this.revealed.add(j);this.known[j]=1}}
+  return true},
+ tap(i){if(i<0||i>=this.mines.length||this.state==="won"||this.state==="lost")return false;
+  this.history.push({i:i,known:this.known.slice(),revealed:new Set(this.revealed),flagMode:this.flagMode,moves:this.moves,dug:this.dug});
+  this.moves++;
+  if(this.flagMode){if(!this.revealed.has(i)){this.known[i]=this.known[i]===2?0:2;sfx("dig",0.22)}}
+  else{if(this.known[i]===2)return true;if(this.mines[i]){this.state="lost";this.known[i]=3;this.finish("HIT A MINE");return true}
+   if(this.reveal(i))this.dug++;sfx("dig",0.25)}
+  if(this.state!=="running")this.start();
+  sEl.textContent=this.mineCount-this.flags();this.checkWin();draw();return true},
+ finish(why){this.state="lost";oht.textContent=why;
+  const safeLeft=this.w*this.h-this.mineCount-this.revealed.size;
+  stEl.textContent="LEVEL "+this.level+"  ·  "+safeLeft+" SAFE CELLS LEFT UNSEEN  ·  SCORE "+this.score;
+  overEl.classList.add("on");sfx("win",0.4);sdkEvent("GameplayEnd");draw()},
+ flags(){let f=0;for(let i=0;i<this.known.length;i++)if(this.known[i]===2)f++;return f},
+ undo(){if(!this.history.length)return false;const h=this.history.pop();
+  this.known=h.known;this.revealed=h.revealed;this.flagMode=h.flagMode;this.moves=h.moves;this.dug=h.dug;
+  sEl.textContent=this.mineCount-this.flags();sfx("dig",0.18);draw();return true},
+ hint(){const d=deduce(this.w,this.h,this.mines,this.revealed);
+  for(let k=0;k<d.safe.length;k++){const i=d.safe[k];if(!this.revealed.has(i)){this.tap(i);this.score=Math.max(0,this.score-6);return true}}
+  return false},
+ checkWin(){const need=this.w*this.h-this.mineCount;
+  if(this.revealed.size>=need){this.state="won";this.score+=Math.max(20,200-this.moves*2)+this.level*25;
+   if(this.score>this.best){this.best=this.score;store("df_best",String(this.score))}
+   oht.textContent="FIELD CLEARED";stEl.textContent="LEVEL "+this.level+" IN "+this.moves+" MOVES  ·  SCORE "+this.score;
+   overEl.classList.add("on");vEl.textContent=this.best;sfx("win",0.5);sdkEvent("GameplayEnd");
+   try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}}},
+ next(){this.level++;this.build();this.start();return this.level},
+ start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+ sum(){let v=0;for(const m of this.mines)v+=m;return v},
+ cellAt(x,y){const g=this.geom();const c=Math.floor((x-g.ox)/g.cs),r=Math.floor((y-g.oy)/g.cs);
+  if(r<0||c<0||r>=this.h||c>=this.w)return -1;return idx(r,c,this.w)},
+ geom(){const pad=Math.round(Math.min(W,H)*0.04),lh=Math.max(12,Math.round(Math.min(W,H)*0.035));
+  const top=pad+lh*2,bottom=pad+Math.round(H*0.09);
+  const cs=Math.max(12,Math.floor(Math.min((W-pad*2)/this.w,(H-top-bottom)/this.h)));
+  return {cs:cs,ox:Math.round((W-cs*this.w)/2),oy:Math.round(top+(H-top-bottom-cs*this.h)/2),w:this.w,h:this.h}},
+ probe(){return {state:this.state,level:this.level,seed:this.seed,w:this.w,h:this.h,
+   mines:this.mines.slice(),counts:this.counts.slice(),known:Array.from(this.known),
+   revealed:Array.from(this.revealed).sort((a,b)=>a-b),moves:this.moves,dug:this.dug,score:this.score,
+   flags:this.flags(),tries:this.tries,deducible:this.deducible,flagMode:this.flagMode,start0:this.start0,
+   mine_count:this.mineCount||0,best:this.best,fps:Math.round(fps),stage:[W,H],geom:this.geom()}}}
+;
+
+const SFXN=["dig","win"],bufs={};let actx=null,muted=store("df_muted")==="1";
+const muteEl=document.getElementById("mute"),undoEl=document.getElementById("undo"),flagEl=document.getElementById("flagmode");
+muteEl.textContent=muted?"SOUND OFF":"SOUND ON";undoEl.textContent="UNDO";flagEl.textContent="FLAG: OFF";
+function audioWake(){if(actx||muted)return;try{actx=new (window.AudioContext||window.webkitAudioContext)();
+ SFXN.forEach(n=>fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(buf=>{bufs[n]=buf}).catch(()=>{}))}catch(e){}}
+function sfx(name,vol){if(muted||!actx)return;const b=bufs[name];if(!b)return;
+ try{const s=actx.createBufferSource();s.buffer=b;const g=actx.createGain();g.gain.value=vol;
+  s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+
+let W=0,H=0,PIX=1;
+function layout(){W=innerWidth;H=innerHeight;PIX=Math.min(W,H)/560;
+ cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+ document.documentElement.style.fontSize=Math.max(13,Math.round(17*PIX))+"px";draw()}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{const k=e.key.toLowerCase();
+ if(["arrowleft","arrowright","arrowup","arrowdown"," ","f","z"].includes(e.key))e.preventDefault();
+ if(k==="z")sim.undo();else if(k==="f"){sim.flagMode=!sim.flagMode;flagEl.textContent="FLAG: "+(sim.flagMode?"ON":"OFF");draw()}
+ else if(e.key===" "&&sim.state==="won")sim.next()},{passive:false});
+cv.addEventListener("pointerdown",e=>{if(sim.state==="won"){sim.next();return}
+ sim.tap(sim.cellAt(e.clientX,e.clientY))},{passive:true});
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("df_muted",muted?"1":"0");
+ muteEl.textContent=muted?"SOUND OFF":"SOUND ON"});
+undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
+flagEl.addEventListener("click",e=>{e.stopPropagation();sim.flagMode=!sim.flagMode;
+ flagEl.textContent="FLAG: "+(sim.flagMode?"ON":"OFF");draw()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.state="paused"});
+
+const NUM=["","#4ba3e0","#57c07a","#e0565b","#a06bff","#e0b84b","#4bd6c8","#d94b9b","#8fb84b"];
+function draw(){const g=sim.geom(),cs=g.cs;
+ cx.fillStyle="#0d1220";cx.fillRect(0,0,W,H);
+ for(let r=0;r<sim.h;r++)for(let c=0;c<sim.w;c++){const i=idx(r,c,sim.w),x=g.ox+c*cs,y=g.oy+r*cs;
+  const rev=sim.revealed.has(i),kn=sim.known[i];
+  cx.fillStyle=rev?(kn===3?"#7a2530":"#182233"):"#2a3away";
+  cx.fillStyle=rev?(kn===3?"#7a2530":"#182233"):"#26334a";
+  cx.fillRect(x+1,y+1,cs-2,cs-2);
+  if(!rev&&kn===2){cx.fillStyle="#ffd166";cx.beginPath();
+   cx.moveTo(x+cs*0.35,y+cs*0.22);cx.lineTo(x+cs*0.72,y+cs*0.38);cx.lineTo(x+cs*0.35,y+cs*0.54);cx.closePath();cx.fill();
+   cx.fillRect(x+cs*0.33,y+cs*0.22,Math.max(1.5,cs*0.05),cs*0.5)}
+  if(rev&&sim.counts[i]>0){cx.fillStyle=NUM[Math.min(8,sim.counts[i])];
+   cx.font="800 "+Math.round(cs*0.52)+"px system-ui";cx.textAlign="center";cx.textBaseline="middle";
+   cx.fillText(String(sim.counts[i]),x+cs/2,y+cs/2)}
+  if(rev&&kn===3){cx.fillStyle="#0a0d13";cx.beginPath();cx.arc(x+cs/2,y+cs/2,cs*0.22,0,6.284);cx.fill()}
+  cx.strokeStyle="#161f2e";cx.lineWidth=1;cx.strokeRect(x+.5,y+.5,cs-1,cs-1)}
+ cx.strokeStyle="#4b5f86";cx.lineWidth=2;cx.strokeRect(g.ox-1,g.oy-1,cs*sim.w+2,cs*sim.h+2)}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){if(t0===null)t0=now;frames++;last=now;
+ if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}requestAnimationFrame(loop)}
+window.__game=sim;window.FIELDS={adjacents,counts,openFrom,fullyDeducible,deduce,idx};
+sim.newBoard(1);layout();requestAnimationFrame(loop);
+</script>
+</body></html>
