@@ -21,11 +21,17 @@ canvas{display:block;background:#0b1220}
 #over h2{font-size:min(9vw,46px);margin:0}
 #over .stats{font-size:min(5vw,22px);color:#cfd8ea;font-variant-numeric:tabular-nums}
 #over .hint{font-size:min(4vw,17px);color:#9aa6bd}
+#hint{position:absolute;left:0;right:0;bottom:18%;text-align:center;font-size:min(4.5vw,19px);
+  color:#cfd8ea;text-shadow:0 1px 3px #000;pointer-events:none}
+#mute{position:absolute;top:1.5%;right:1.5%;width:9.5%;min-width:34px;aspect-ratio:1/1;border:0;
+  border-radius:9px;background:rgba(13,18,32,.72);color:#e8ecf4;font-size:15px;cursor:pointer}
 </style></head>
 <body>
 <div id="wrap">
   <canvas id="cv" width="420" height="560"></canvas>
   <div id="hud"><span>SCORE <b id="s">0</b></span><span class="combo">x<b id="c">1</b></span><span>BEST <b id="b">0</b></span></div>
+  <div id="hint">← → or tap to move · grab coins, keep the combo</div>
+  <button id="mute" type="button" aria-label="toggle sound">SOUND ON</button>
   <div id="over"><h2>GAME OVER</h2><p class="stats" id="stats"></p><p class="hint">Press SPACE or tap to run again</p></div>
 </div>
 <script>
@@ -65,6 +71,31 @@ const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
 function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
 function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
 
+// Synthesised locally (numpy -> ffmpeg libvorbis), shipped as relative files, so
+// the bundle stays self-contained and small.
+const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,buffers={},muted=store("lr_muted")==="1",shake=0,parts=[];
+const hintEl=document.getElementById("hint"),muteEl=document.getElementById("mute");
+function audioWake(){
+  if(actx||!AC)return;
+  try{actx=new AC();
+    for(const n of ["coin","shield","block","over","die"])
+      fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>{buffers[n]=a}).catch(()=>{})
+  }catch(e){actx=null}
+}
+function sfx(n,vol){
+  if(muted||!actx||!buffers[n])return;
+  try{const src=actx.createBufferSource(),g=actx.createGain();
+    src.buffer=buffers[n];g.gain.value=vol===undefined?0.5:vol;
+    src.connect(g);g.connect(actx.destination);src.start()}catch(e){}
+}
+function renderHudControls(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("lr_muted",muted?"1":"0");renderHudControls()});
+addEventListener("pointerdown",audioWake,{once:false});addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.pause()});
+function burst(lane,color){const x=lane*LANE_W+LANE_W/2,y=H-60*SCALE+15*SCALE;
+  for(let i=0;i<9;i++)parts.push({x,y,vx:((i%5)-2)*1.7*SCALE,vy:-(1.4+(i%3))*SCALE,life:26,color})}
+
 const sim={
   seed:1,rng:null,frame:0,lane:2,score:0,combo:1,bestCombo:1,coins:0,shield:0,
   best:+(store("lr_best")||0),state:"ready",obs:[],coinsRow:[],power:[],
@@ -82,7 +113,7 @@ const sim={
   die(){
     this.state="over";this.framesToOver=this.frame;
     if(this.score>this.best){this.best=this.score;store("lr_best",String(this.best))}
-    sdkEvent("GameplayEnd");
+    sdkEvent("GameplayEnd");shake=16*SCALE;sfx("die",0.6);sfx("over",0.35);
     stEl.textContent="SCORE "+this.score+"  ·  COINS "+this.coins+"  ·  BEST COMBO x"+this.bestCombo;
     overEl.classList.add("on");
     try{if(CG&&CG.SDK&&CG.SDK.requestAd){this.adRequested++;CG.SDK.requestAd("midgame")}}catch(e){}
@@ -114,18 +145,20 @@ const sim={
       // same frame never reads as an unfair death.
       this.coinsRow=this.coinsRow.filter(o=>{
         if(o.lane===this.lane&&Math.abs(o.y+15*SCALE-cy)<30*SCALE){
-          this.coins++;this.combo=Math.min(8,this.combo+1);this.bestCombo=Math.max(this.bestCombo,this.combo);return false}
+          this.coins++;this.combo=Math.min(8,this.combo+1);this.bestCombo=Math.max(this.bestCombo,this.combo);
+          burst(o.lane,"#ffd166");sfx("coin",0.45);hintEl.style.display="none";return false}
         return o.y<H+40});
       this.power=this.power.filter(o=>{
-        if(o.lane===this.lane&&Math.abs(o.y+15*SCALE-cy)<30*SCALE){this.shield=2;return false}
+        if(o.lane===this.lane&&Math.abs(o.y+15*SCALE-cy)<30*SCALE){this.shield=2;sfx("shield",0.5);burst(o.lane,"#57d38c");return false}
         return o.y<H+40});
       for(const o of this.obs){
         if(o.lane===this.lane&&Math.abs(o.y+15*SCALE-cy)<30*SCALE){
-          if(this.shield>0){this.shield--;this.combo=1;o.y=H+999;continue}
+          if(this.shield>0){this.shield--;this.combo=1;o.y=H+999;shake=9*SCALE;sfx("block",0.6);continue}
           this.die();return this}}
       if(this.frame%10===0)this.score+=this.combo;
       if(this.frame%400===0&&this.combo>1)this.combo--;
       if(this.frame%600===0)this.speed+=0.5;
+      if(this.frame>90&&hintEl.style.display!=="none")hintEl.style.display="none";
     }
     return this},
   runUntilOver(max){for(let i=0;i<max&&this.state!=="over";i++)this.step(1);return this},
@@ -134,7 +167,9 @@ const sim={
     fps:Math.round(fps),stage:[W,H],fontSizePx:parseFloat(getComputedStyle(document.documentElement).fontSize)}}
 };
 function draw(){
-  cx.fillStyle="#0b1220";cx.fillRect(0,0,W,H);
+  cx.save();
+  if(shake>0.4){cx.translate((Math.random()-0.5)*shake,(Math.random()-0.5)*shake);shake*=0.86}else shake=0
+  cx.fillStyle="#0b1220";cx.fillRect(-20,-20,W+40,H+40);
   cx.strokeStyle="#17253c";cx.lineWidth=1;
   for(let l=1;l<LANES;l++){cx.beginPath();cx.moveTo(l*LANE_W,0);cx.lineTo(l*LANE_W,H);cx.stroke()}
   const s=Math.max(2,10*SCALE);
@@ -143,6 +178,10 @@ function draw(){
   cx.fillStyle="#ff6b5b";for(const o of sim.obs)cx.fillRect(o.lane*LANE_W+s,o.y,LANE_W-2*s,30*SCALE);
   cx.fillStyle=sim.shield>0?"#57d38c":"#5cc8ff";
   cx.fillRect(sim.lane*LANE_W+s*1.2,H-60*SCALE,LANE_W-2.4*s,30*SCALE);
+  cx.fillStyle="#0b1220";cx.fillRect(0,-20,W,20);cx.fillRect(0,H,W,20);
+  for(const p of parts){p.x+=p.vx;p.y+=p.vy;p.vy+=0.28*SCALE;p.life--;cx.fillStyle=p.color;cx.fillRect(p.x,p.y,3.4*SCALE,3.4*SCALE)}
+  parts=parts.filter(p=>p.life>0);
+  cx.restore();
   sEl.textContent=sim.score;cEl.textContent=sim.combo;bEl.textContent=sim.best;
 }
 let frames=0,t0=null,acc=0,last=performance.now(),fps=0;
@@ -154,5 +193,5 @@ function loop(now){
   if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
   requestAnimationFrame(loop)}
 window.__game=sim;
-sim.reset(1);resize();requestAnimationFrame(loop);
+sim.reset(1);resize();renderHudControls();requestAnimationFrame(loop);
 </script></body></html>
