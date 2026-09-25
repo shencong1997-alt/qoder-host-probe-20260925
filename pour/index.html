@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Pour Sort</title>
+<meta name="description" content="Sort the colours so every tube holds one colour. Every level here is checked solvable by an exhaustive search before it is dealt.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0d13;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#101725}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.4% 3%;font-size:17px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px #000}
+#hint{position:absolute;left:0;right:0;bottom:10%;text-align:center;font-size:min(4.4vw,18px);color:#cfd8ea;pointer-events:none}
+#mute,#undo,#hintbtn{position:absolute;top:9%;padding:1% 2.2%;border:0;border-radius:9px;background:rgba(16,23,37,.82);
+  color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute{right:1.5%}#undo{left:1.5%}#hintbtn{left:18%}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(10,13,19,.9);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(4.6vw,20px);color:#cfd8ea}
+button{min-height:44px;min-width:44px}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="420" height="560"></canvas>
+  <div id="hud"><span>MOVES <b id="s">0</b></span><span>LEVEL <b id="x">1</b></span><span>BEST <b id="v">0</b></span></div>
+  <div id="hint">Tap a tube to lift it, tap another to pour.</div>
+  <button id="undo" type="button">UNDO</button>
+  <button id="hintbtn" type="button">HINT</button>
+  <button id="mute" type="button">SOUND ON</button>
+  <div id="over"><h2 id="oht">SORTED</h2><p class="stats" id="stats"></p><p style="color:#9aa6bd;font-size:min(4vw,17px)">TAP or SPACE for the next level</p></div>
+</div>
+<script>
+"use strict";
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ sEl=document.getElementById("s"),xEl=document.getElementById("x"),vEl=document.getElementById("v"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+
+// ---- state and exhaustive solvability -------------------------------------
+// A state is an array of tubes, each an array bottom->top. Tubes are physically
+// distinct but interchangeable to a solver, so states are canonicalised by
+// sorting their string forms; that is what keeps a 6-tube search small enough to
+// run inside a page.
+function keyOf(tubes){return tubes.map(t=>t.join(",")).sort().join("|")}
+function isDone(tubes,cap){return tubes.every(t=>t.length===0||t.length===cap&&t.every(v=>v===t[0]))}
+function canPour(src,dst,cap){if(!src.length)return false;if(dst.length>=cap)return false;
+  return !dst.length||dst[dst.length-1]===src[src.length-1]}
+function pour(tubes,i,j,cap){const t=tubes.map(x=>x.slice());if(!canPour(t[i],t[j],cap))return null;
+  const c=t[i][t[i].length-1];while(t[i].length&&t[j].length<cap&&t[i][t[i].length-1]===c)t[j].push(t[i].pop());
+  return t}
+function movesFrom(tubes,cap){const out=[];
+  for(let i=0;i<tubes.length;i++){if(!tubes[i].length)continue;
+   if(tubes[i].length===cap&&tubes[i].every(v=>v===tubes[i][0]))continue;  // solved tube: never drain it
+   for(let j=0;j<tubes.length;j++){if(i===j)continue;if(!canPour(tubes[i],tubes[j],cap))continue;out.push([i,j])}}
+  return out}
+// Breadth-first over canonical states. Returns {path, complete}: path is the
+// shortest move list or null, and `complete` says whether the search actually
+// exhausted the reachable space. Without that flag a node budget would let "I gave
+// up" be read as "this position is unsolvable", which is the opposite of a proof.
+function search(tubes,cap,maxNodes){const budget=maxNodes||60000;
+  if(isDone(tubes,cap))return {path:[],complete:true,expanded:0};
+  const seen=new Set([keyOf(tubes)]);let frontier=[{t:tubes,path:[]}],expanded=0;
+  for(let depth=0;frontier.length;depth++){const next=[];
+   for(const node of frontier){for(const [i,j] of movesFrom(node.t,cap)){
+     const t2=pour(node.t,i,j,cap);if(!t2)continue;const k=keyOf(t2);if(seen.has(k))continue;
+     expanded++;if(expanded>budget)return {path:null,complete:false,expanded:expanded};
+     const path=node.path.concat([[i,j]]);if(isDone(t2,cap))return {path:path,complete:true,expanded:expanded};
+     seen.add(k);next.push({t:t2,path:path})}}
+   frontier=next}
+  return {path:null,complete:true,expanded:expanded}}
+function solve(tubes,cap,maxNodes){return search(tubes,cap,maxNodes).path}
+function deal(colors,cap,rnd,spares){const pool=[];
+  for(let c=0;c<colors;c++)for(let k=0;k<cap;k++)pool.push(c+1);
+  for(let i=pool.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));const tmp=pool[i];pool[i]=pool[j];pool[j]=tmp}
+  const tubes=[];for(let t=0;t<colors;t++)tubes.push(pool.slice(t*cap,t*cap+cap));
+  // A dealt board with no spare air is almost always a dead position, so the
+  // empty tubes are part of the puzzle rather than decoration.
+  for(let k=0;k<(spares===undefined?2:spares);k++)tubes.push([]);
+  return tubes}
+
+const LEVELS=[[3,3],[3,3],[4,3],[4,4],[5,4],[5,4],[6,4]];
+const sim={
+ seed:1,level:1,tubes:[],cap:3,n:4,moves:0,state:"ready",history:[],selected:-1,picks:[],
+ score:0,best:+store("ps_best")||0,tries:0,solutionLen:0,provenRejected:0,unknownRejected:0,
+ newBoard(seed){if(seed)this.seed=seed;this.level=1;this.score=0;this.build();
+  this.state="ready";overEl.classList.remove("on");hintEl.style.display="";sdkEvent("LoadingStop");return this},
+ build(){const s=LEVELS[Math.min(this.level-1,LEVELS.length-1)];const colors=s[0];this.cap=s[1];
+  const rnd=rng32(this.seed*2654435761+this.level*40503+13);
+  this.tubes=[];this.tries=0;this.solutionLen=0;this.provenRejected=0;this.unknownRejected=0;
+  for(let attempt=0;attempt<300&&!this.tubes.length;attempt++){this.tries++;
+   const t=deal(colors,this.cap,rnd,2);this.n=t.length;
+   if(isDone(t,this.cap))continue;
+   // An unsolvable deal is a wasted player minute, so the level is dealt until the
+   // complete search says it can be finished.
+   const r=search(t,this.cap,60000);
+   if(r.path){this.tubes=t;this.solutionLen=r.path.length}
+   else if(r.complete)this.provenRejected++;else this.unknownRejected++}
+  this.history=[];this.moves=0;this.selected=-1;this.picks=[];
+  sEl.textContent=0;xEl.textContent=this.level;vEl.textContent=this.best},
+ tubeAt(x,y){const g=this.geom();for(let i=0;i<this.n;i++){const gx=g.x+i*(g.tw+g.gap);
+   if(x>=gx&&x<=gx+g.tw&&y>=g.y&&y<=g.y+g.th)return i}return -1},
+ select(i){if(i<0||this.state==="won")return false;
+  if(this.selected===i){this.selected=-1;return true}
+  if(this.selected<0){this.selected=i;return true}
+  const ok=this.pourNow(this.selected,i);this.selected=-1;return ok},
+ pourNow(i,j){if(i===j||i<0||j<0)return false;
+  if(!canPour(this.tubes[i],this.tubes[j],this.cap))return false;
+  this.history.push({t:this.tubes.map(t=>t.slice()),moves:this.moves});
+  this.tubes=pour(this.tubes,i,j,this.cap);this.moves++;sEl.textContent=this.moves;
+  if(this.state!=="running")this.start();
+  sfx("pour",0.3);
+  if(isDone(this.tubes,this.cap)){this.state="won";this.finish()}else draw();
+  return true},
+ undo(){if(!this.history.length)return false;const h=this.history.pop();
+  this.tubes=h.t;this.moves=h.moves;sEl.textContent=this.moves;sfx("pour",0.2);draw();return true},
+ hint(){if(this.state==="won")return false;const sol=solve(this.tubes,this.cap,60000);
+  if(!sol||!sol.length)return false;const mv=sol[0];this.score=Math.max(0,this.score-8);
+  this.pourNow(mv[0],mv[1]);return true},
+ finish(){this.score+=Math.max(20,150-this.moves*3)+this.level*20;
+  if(this.score>this.best){this.best=this.score;store("ps_best",String(this.score))}
+  vEl.textContent=this.best;oht.textContent="SORTED";
+  stEl.textContent="LEVEL "+this.level+" IN "+this.moves+" MOVES  ·  SCORE "+this.score;
+  overEl.classList.add("on");sfx("win",0.5);sdkEvent("GameplayEnd");draw();
+  try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}},
+ next(){this.level++;this.build();this.start();return this.level},
+ start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+ sum(){return this.tubes.reduce((a,t)=>a+t.length,0)},
+ geom(){const pad=Math.round(Math.min(W,H)*0.05),top=Math.round(H*0.16),bot=Math.round(H*0.16);
+  const gap=Math.max(6,Math.round(W*0.025));
+  const tw=Math.max(14,Math.floor((W-pad*2-gap*(this.n-1))/this.n));
+  const th=Math.max(40,H-top-bot);return {tw:tw,th:th,gap:gap,x:pad,y:top}},
+ probe(){return {state:this.state,level:this.level,seed:this.seed,score:this.score,best:this.best,
+   tubes:this.tubes.map(t=>t.slice()),cap:this.cap,n:this.n,moves:this.moves,
+   tries:this.tries,solution_len:this.solutionLen,proven_rejected:this.provenRejected,unknown_rejected:this.unknownRejected,
+   done:isDone(this.tubes,this.cap),search_now:search(this.tubes,this.cap,60000).complete===true,
+   history:this.history.length,selected:this.selected,fps:Math.round(fps),stage:[W,H],geom:this.geom()}},
+ solve(limit){return solve(this.tubes,this.cap,limit||60000)}
+};
+
+const SFXN=["pour","win"],bufs={};let actx=null,muted=store("ps_muted")==="1";
+const muteEl=document.getElementById("mute"),undoEl=document.getElementById("undo"),hintBtn=document.getElementById("hintbtn");
+muteEl.textContent=muted?"SOUND OFF":"SOUND ON";undoEl.textContent="UNDO";hintBtn.textContent="HINT";
+function audioWake(){if(actx||muted)return;try{actx=new (window.AudioContext||window.webkitAudioContext)();
+ SFXN.forEach(n=>fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(buf=>{bufs[n]=buf}).catch(()=>{}))}catch(e){}}
+function sfx(name,vol){if(muted||!actx)return;const b=bufs[name];if(!b)return;
+ try{const s=actx.createBufferSource();s.buffer=b;const g=actx.createGain();g.gain.value=vol;
+  s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+
+let W=0,H=0,PIX=1;
+function layout(){W=innerWidth;H=innerHeight;PIX=Math.min(W,H)/560;
+ cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+ document.documentElement.style.fontSize=Math.max(13,Math.round(17*PIX))+"px";draw()}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{const k=e.key;
+ if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"," "].includes(k))e.preventDefault();
+ if(k==="z")sim.undo();else if(k==="h")sim.hint();
+ else if(k===" "&&sim.state==="won")sim.next();
+ else if(k==="ArrowLeft"&&sim.state!=="won"){const cur=sim.selected<0?0:Math.max(0,sim.selected-1);
+  sim.selected=cur;draw()}
+ else if(k==="ArrowRight"&&sim.state!=="won"){const cur=sim.selected<0?0:Math.min(sim.n-1,sim.selected+1);
+  sim.selected=cur;draw()}
+ else if(k==="Enter"&&sim.selected>=0)sim.select(sim.selected)},{passive:false});
+cv.addEventListener("pointerdown",e=>{if(sim.state==="won"){sim.next();return}
+ sim.select(sim.tubeAt(e.clientX,e.clientY))},{passive:true});
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("ps_muted",muted?"1":"0");
+ muteEl.textContent=muted?"SOUND OFF":"SOUND ON"});
+undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
+hintBtn.addEventListener("click",e=>{e.stopPropagation();sim.hint()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.state="paused"});
+
+const HUES=["#e0565b","#4b9fe0","#57c07a","#e0b84b","#a06bff","#ff8f4b","#4bd6c8","#d94b9b","#8fb84b","#5b6ee0"];
+function draw(){const g=sim.geom();
+ cx.fillStyle="#0d1220";cx.fillRect(0,0,W,H);
+ for(let i=0;i<sim.n;i++){const x=g.x+i*(g.tw+g.gap);
+  cx.fillStyle="#121a29";cx.beginPath();
+  const r=Math.round(g.tw*0.28);
+  cx.moveTo(x,g.y);cx.lineTo(x,g.y+g.th-r);cx.quadraticCurveTo(x,g.y+g.th,x+r,g.y+g.th);
+  cx.lineTo(x+g.tw-r,g.y+g.th);cx.quadraticCurveTo(x+g.tw,g.y+g.th,x+g.tw,g.y+g.th-r);
+  cx.lineTo(x+g.tw,g.y);cx.closePath();cx.fill();
+  const t=sim.tubes[i]||[],seg=g.th/sim.cap,lift=(i===sim.selected)?Math.round(g.th*0.06):0;
+  for(let k=0;k<t.length;k++){const y=g.y+g.th-(k+1)*seg-lift;
+   cx.fillStyle=HUES[(t[k]-1)%HUES.length];
+   cx.fillRect(x+3,Math.max(g.y-lift,y+2),g.tw-6,seg-4)}
+  if(sim.selected===i){cx.strokeStyle="#ffd166";cx.lineWidth=3;cx.strokeRect(x-2,g.y-lift-2,g.tw+4,g.th+4)}
+  else{cx.strokeStyle="#33425e";cx.lineWidth=2;cx.strokeRect(x,g.y,g.tw,g.th)}}}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){if(t0===null)t0=now;frames++;last=now;
+ if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}requestAnimationFrame(loop)}
+window.__game=sim;window.POUR={keyOf,isDone,canPour,pour,movesFrom,search,solve,deal};
+sim.newBoard(1);layout();requestAnimationFrame(loop);
+</script>
+</body></html>
