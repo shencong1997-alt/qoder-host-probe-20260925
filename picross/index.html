@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Picross Grid</title>
+<meta name="description" content="Deduce the picture from the row and column numbers. Every puzzle here has exactly one solution, proved by the generator.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0d13;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#101725}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.4% 3%;font-size:17px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px #000}
+#hint{position:absolute;left:0;right:0;bottom:10%;text-align:center;font-size:min(4.4vw,18px);color:#cfd8ea;pointer-events:none}
+#mute,#undo,#hintbtn{position:absolute;top:9%;padding:1% 2.2%;border:0;border-radius:9px;background:rgba(16,23,37,.82);
+  color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute{right:1.5%}#undo{left:1.5%}#hintbtn{left:18%}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(10,13,19,.88);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(4.6vw,20px);color:#cfd8ea}
+button{min-height:44px;min-width:44px}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="420" height="560"></canvas>
+  <div id="hud"><span>SCORE <b id="s">0</b></span><span>PUZZLE <b id="x">1</b></span><span>BEST <b id="v">0</b></span></div>
+  <div id="hint">Tap a cell: empty, filled, crossed. The numbers give the whole picture.</div>
+  <button id="undo" type="button">UNDO</button>
+  <button id="hintbtn" type="button">HINT</button>
+  <button id="mute" type="button">SOUND ON</button>
+  <div id="over"><h2 id="oht">SOLVED</h2><p class="stats" id="stats"></p><p style="color:#9aa6bd;font-size:min(4vw,17px)">TAP or ENTER for the next puzzle</p></div>
+</div>
+<script>
+"use strict";
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ sEl=document.getElementById("s"),xEl=document.getElementById("x"),vEl=document.getElementById("v"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+
+// ---- clue maths. A line is an integer bitmask over its cells. --------------
+function cluesOf(mask,len){const out=[];let run=0;
+  for(let i=0;i<len;i++){if(mask&(1<<i)){run++}else if(run){out.push(run);run=0}}
+  if(run)out.push(run);return out.length?out:[0]}
+// Every placement of a clue inside `len` cells, as bitmasks.
+function lineMasks(clue,len){const res=[];
+  if(clue.length===1&&clue[0]===0){res.push(0);return res}
+  const need=clue.reduce((a,b)=>a+b,0)+clue.length-1;if(need>len)return res;
+  (function put(i,pos,mask){if(i>=clue.length){res.push(mask);return}
+   const rest=clue.slice(i).reduce((a,b)=>a+b,0)+(clue.length-i-1);
+   for(let off=0;pos+rest<=len;off++,pos++){
+     let m=mask;for(let k=0;k<clue[i];k++)m|=1<<(pos+k);put(i+1,pos+clue[i]+1,m)}})(0,0,0);
+  return res}
+// Shared engine for the two searches below: walk the rows in order, and for each
+// candidate keep only the column placements still matching what has been placed.
+function search(rowClues,colClues,limit,onFull){const n=rowClues.length,m=colClues.length;
+  const rm=rowClues.map(c=>lineMasks(c,m)),cm=colClues.map(c=>lineMasks(c,n));
+  if(rm.some(a=>!a.length)||cm.some(a=>!a.length))return 0;
+  let found=0;const assigned=new Array(n);
+  (function rec(r,alive){if(found>=limit)return;
+   if(r===n){found++;if(onFull)onFull(assigned.slice());return}
+   for(const mask of rm[r]){const next=[];let ok=true;
+    for(let c=0;c<m;c++){const bit=(mask>>c)&1;const keep=alive[c].filter(v=>((v>>r)&1)===bit);
+     if(!keep.length){ok=false;break}next.push(keep)}
+    if(ok){assigned[r]=mask;rec(r+1,next);assigned[r]=undefined}
+    if(found>=limit)return}})(0,cm);
+  return found}
+function countSolutions(rowClues,colClues,limit){return search(rowClues,colClues,limit,null)}
+function firstSolution(rowClues,colClues){let cap=null;
+  search(rowClues,colClues,1,g=>{if(!cap)cap=g});
+  return cap}
+
+const SIZES=[[5,5],[5,5],[6,6],[6,8],[8,8],[10,10]];
+const sim={
+ seed:1,level:1,n:5,m:5,target:[],grid:[],mark:[],rows:[],cols:[],score:0,best:+store("pg_best")||0,
+ state:"ready",history:[],tries:0,uniqueGenerated:false,
+ newBoard(seed){if(seed)this.seed=seed;this.score=0;this.history=[];this.level=1;
+  this.state="ready";overEl.classList.remove("on");hintEl.style.display="";
+  this.build();sdkEvent("LoadingStop");return this},
+ build(){const s=SIZES[Math.min(this.level-1,SIZES.length-1)];this.n=s[0];this.m=s[1];
+  this.target=[];this.tries=0;this.uniqueGenerated=false;
+  const rnd=rng32(this.seed*2654435761+this.level*40503+11);
+  const ladder=[0.45,0.34,0.25,0.18];
+  for(let attempt=0;attempt<240&&!this.uniqueGenerated;attempt++){this.tries++;
+   const d=ladder[Math.min(ladder.length-1,Math.floor(attempt/60))];
+   const t=[];for(let r=0;r<this.n;r++){const row=[];for(let c=0;c<this.m;c++)row.push(rnd()<d?1:0);t.push(row)}
+   const rows=t.map(r=>cluesOf(r.reduce((a,v,c)=>a|(v<<c),0),this.m));
+   const cols=[];for(let c=0;c<this.m;c++)cols.push(cluesOf(t.reduce((a,row,r)=>a|(row[c]<<r),0),this.n));
+   // A puzzle whose clues admit two pictures is a coin toss, so it is not shipped.
+   if(countSolutions(rows,cols,2)===1){this.target=t;this.rows=rows;this.cols=cols;this.uniqueGenerated=true}}
+  this.grid=this.target.map(r=>r.map(()=>0));this.mark=this.target.map(r=>r.map(()=>0));
+  this.state="ready";sEl.textContent=this.score;xEl.textContent=this.level;vEl.textContent=this.best},
+ geom(){const pad=Math.round(Math.min(W,H)*0.03),lh=Math.max(11,Math.round(Math.min(W,H)*0.03));
+  let maxR=1;for(const c of this.rows)maxR=Math.max(maxR,c.length);
+  let maxC=1;for(const c of this.cols)maxC=Math.max(maxC,c.length);
+  const leftBand=pad+maxR*(lh+5),topBand=pad+maxC*(lh+5);
+  const cs=Math.max(10,Math.floor(Math.min((W-leftBand-pad*2)/this.m,(H-topBand-pad*2)/this.n)));
+  return {cs:cs,lh:lh,ox:Math.round(leftBand+(W-leftBand-pad-cs*this.m)/2),
+    oy:Math.round(topBand+(H-topBand-pad-cs*this.n)/2)}},
+ cellAt(x,y){const g=this.geom();const c=Math.floor((x-g.ox)/g.cs),r=Math.floor((y-g.oy)/g.cs);
+  if(r<0||c<0||r>=this.n||c>=this.m)return -1;return r*this.m+c},
+ tap(i){if(i<0)return false;if(this.state==="won")return false;
+  const r=Math.floor(i/this.m),c=i%this.m;
+  this.history.push({r:r,c:c,g:this.grid[r][c],m:this.mark[r][c]});
+  if(!this.grid[r][c]&&!this.mark[r][c])this.grid[r][c]=1;
+  else if(this.grid[r][c]){this.grid[r][c]=0;this.mark[r][c]=1}
+  else{this.grid[r][c]=0;this.mark[r][c]=0}
+  if(this.state!=="running")this.start();
+  sfx(this.grid[r][c]?"pop":"dig",0.22);this.check();return true},
+ undo(){if(!this.history.length)return false;const h=this.history.pop();
+  this.grid[h.r][h.c]=h.g;this.mark[h.r][h.c]=h.m;sfx("dig",0.2);draw();return true},
+ // Hint reveals one wrong cell, scanned from a caller-supplied offset so the same
+ // board plus the same call sequence always reveals the same cell.
+ hint(cycle){if(this.state==="won")return false;const total=this.n*this.m;
+  const start=(cycle||0)%total;
+  for(let k=0;k<total;k++){const i=(start+k)%total,r=Math.floor(i/this.m),c=i%this.m;
+   if(this.grid[r][c]!==this.target[r][c]){this.grid[r][c]=this.target[r][c];this.mark[r][c]=0;
+    this.score=Math.max(0,this.score-5);sEl.textContent=this.score;sfx("pop",0.3);this.check();return true}}
+  return false},
+ rowDone(r){return this.rows[r].join()===cluesOf(this.grid[r].reduce((a,v,c)=>a|(v<<c),0),this.m).join()},
+ colDone(c){const col=this.grid.map(r=>r[c]);
+  return this.cols[c].join()===cluesOf(col.reduce((a,v,r)=>a|(v<<r),0),this.n).join()},
+ check(){const win=this.target.every((row,r)=>row.every((v,c)=>this.grid[r][c]===v));
+  if(win){this.state="won";this.score+=100+this.level*25;sEl.textContent=this.score;
+   if(this.score>this.best){this.best=this.score;store("pg_best",String(this.best))}
+   vEl.textContent=this.best;oht.textContent="SOLVED";
+   stEl.textContent="PUZZLE "+this.level+"  ·  SCORE "+this.score;
+   overEl.classList.add("on");sfx("win",0.5);sdkEvent("GameplayEnd");
+   try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}}
+  draw()},
+ next(){this.level++;this.history=[];this.build();this.start();return this.level},
+ start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+ sum(){let v=0;for(const r of this.grid)for(const x of r)v+=x;return v},
+ probe(){return {state:this.state,level:this.level,score:this.score,seed:this.seed,n:this.n,m:this.m,
+   grid:this.grid.map(r=>r.slice()),mark:this.mark.map(r=>r.slice()),target:this.target.map(r=>r.slice()),rows:this.rows,cols:this.cols,
+   tries:this.tries,unique_generated:this.uniqueGenerated,moves:this.history.length,best:this.best,
+   solved:this.target.every((r,i)=>r.every((v,j)=>this.grid[i][j]===v)),
+   fps:Math.round(fps),stage:[W,H],geom:this.geom()}},
+ // Re-derive the picture from the clues alone, ignoring the stored target.
+ solve(){const g=firstSolution(this.rows,this.cols);if(!g)return null;
+  const out=[];for(let r=0;r<this.n;r++){const row=[];for(let c=0;c<this.m;c++)row.push((g[r]>>c)&1);out.push(row)}
+  return out}
+};
+
+const SFXN=["pop","dig","win"],bufs={};let actx=null,muted=store("pg_muted")==="1";
+const muteEl=document.getElementById("mute"),undoEl=document.getElementById("undo"),hintBtn=document.getElementById("hintbtn");
+muteEl.textContent=muted?"SOUND OFF":"SOUND ON";undoEl.textContent="UNDO";hintBtn.textContent="HINT";
+function audioWake(){if(actx||muted)return;try{actx=new (window.AudioContext||window.webkitAudioContext)();
+ SFXN.forEach(n=>fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(buf=>{bufs[n]=buf}).catch(()=>{}))}catch(e){}}
+function sfx(name,vol){if(muted||!actx)return;const b=bufs[name];if(!b)return;
+ try{const s=actx.createBufferSource();s.buffer=b;const g=actx.createGain();g.gain.value=vol;
+  s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+
+let W=0,H=0,PIX=1;
+function layout(){W=innerWidth;H=innerHeight;PIX=Math.min(W,H)/560;
+ cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+ document.documentElement.style.fontSize=Math.max(13,Math.round(17*PIX))+"px";draw()}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{const k=e.key.toLowerCase();
+ if(["arrowleft","arrowright","arrowup","arrowdown"," ","enter","z","h"].includes(k))e.preventDefault();
+ if(k==="z")sim.undo();else if(k==="h")sim.hint(sim.hintCycle=(sim.hintCycle||0)+1);
+ else if((k==="enter"||k===" ")&&sim.state==="won")sim.next()},{passive:false});
+let sx=0,sy=0;
+cv.addEventListener("pointerdown",e=>{sx=e.clientX;sy=e.clientY;
+ if(sim.state==="won"){sim.next();return}},{passive:true});
+cv.addEventListener("pointerup",e=>{if(Math.abs(e.clientX-sx)>12||Math.abs(e.clientY-sy)>12)return;
+ sim.tap(sim.cellAt(e.clientX,e.clientY))},{passive:true});
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("pg_muted",muted?"1":"0");
+ muteEl.textContent=muted?"SOUND OFF":"SOUND ON"});
+undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
+hintBtn.addEventListener("click",e=>{e.stopPropagation();sim.hint(sim.hintCycle=(sim.hintCycle||0)+1)});
+overEl.addEventListener("click",()=>{if(sim.state==="won")sim.next()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.state="paused"});
+
+const ON="#eef3fb",OFF="#131c2c",LINE="#232f45",BOLD="#54688f",MARK="#7c8fb0",DONE="#5fd08a";
+function draw(){const g=sim.geom(),cs=g.cs,lh=g.lh;
+ cx.fillStyle="#0d1220";cx.fillRect(0,0,W,H);
+ cx.font="700 "+lh+"px system-ui";cx.textBaseline="middle";cx.textAlign="right";
+ for(let r=0;r<sim.n;r++){const y=g.oy+r*cs+cs/2;let x=g.ox-6;
+  cx.fillStyle=sim.rowDone(r)?DONE:"#cfd8ea";
+  for(let k=sim.rows[r].length-1;k>=0;k--){const t=String(sim.rows[r][k]);cx.fillText(t,x,y);x-=cx.measureText(t).width+5}}
+ cx.textAlign="center";
+ for(let c=0;c<sim.m;c++){const x=g.ox+c*cs+cs/2;let y=g.oy-6;
+  cx.fillStyle=sim.colDone(c)?DONE:"#cfd8ea";
+  for(let k=sim.cols[c].length-1;k>=0;k--){cx.fillText(String(sim.cols[c][k]),x,y);y-=lh+5}}
+ for(let r=0;r<sim.n;r++)for(let c=0;c<sim.m;c++){const x=g.ox+c*cs,y=g.oy+r*cs;
+  const v=sim.grid[r][c],m=sim.mark[r][c];
+  cx.fillStyle=v?ON:OFF;cx.fillRect(x+1,y+1,cs-2,cs-2);
+  if(m&&!v){cx.strokeStyle=MARK;cx.lineWidth=Math.max(1.5,cs*0.07);cx.beginPath();
+   cx.moveTo(x+cs*0.32,y+cs*0.32);cx.lineTo(x+cs*0.68,y+cs*0.68);
+   cx.moveTo(x+cs*0.68,y+cs*0.32);cx.lineTo(x+cs*0.32,y+cs*0.68);cx.stroke()}}
+ cx.strokeStyle=BOLD;cx.lineWidth=2;
+ for(let r=0;r<=sim.n;r+=5){if(r===0)continue;cx.beginPath();
+  cx.moveTo(g.ox,g.oy+r*cs);cx.lineTo(g.ox+cs*sim.m,g.oy+r*cs);cx.stroke()}
+ for(let c=0;c<=sim.m;c+=5){if(c===0)continue;cx.beginPath();
+  cx.moveTo(g.ox+c*cs,g.oy);cx.lineTo(g.ox+c*cs,g.oy+cs*sim.n);cx.stroke()}
+ cx.strokeStyle=BOLD;cx.lineWidth=2;cx.strokeRect(g.ox-.5,g.oy-.5,cs*sim.m+1,cs*sim.n+1)}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){if(t0===null)t0=now;frames++;last=now;
+ if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}requestAnimationFrame(loop)}
+window.__game=sim;window.PICROSS={cluesOf,lineMasks,countSolutions,firstSolution,SIZES};
+sim.newBoard(1);layout();requestAnimationFrame(loop);
+</script>
+</body></html>
