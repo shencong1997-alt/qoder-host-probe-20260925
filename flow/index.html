@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Flow Lines</title>
+<meta name="description" content="Rotate the pipes and fill every node. Levels are generated from a spanning tree, so each one is solvable by construction.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#06090f;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#0b1220}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.4% 3%;font-size:18px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;
+  text-shadow:0 1px 3px #000}
+#hud .leak{color:#ff7b72}
+#hint{position:absolute;left:0;right:0;bottom:14%;text-align:center;font-size:min(4.5vw,19px);
+  color:#cfd8ea;pointer-events:none;text-shadow:0 1px 3px #000}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;background:rgba(6,9,15,.86);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(5vw,21px);color:#cfd8ea}
+#over .hint{font-size:min(4vw,17px);color:#9aa6bd}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="480" height="640"></canvas>
+  <div id="hud"><span>LEVEL <b id="l">1</b></span><span>MOVES <b id="m">0</b></span><span class="leak">LEAKS <b id="k">0</b></span></div>
+  <div id="hint">TAP a pipe to rotate it. Fill every node with no leaks.</div>
+  <div id="over"><h2 id="oht">ALL NODES FILLED</h2><p class="stats" id="stats"></p><p class="hint">TAP or SPACE for the next level</p></div>
+</div>
+<script>
+"use strict";
+const U=1,R=2,D=4,L=8;
+// Keys are the bit values, not the identifier names: {U:0} would be the string
+// key "U" and every DX[d] lookup would silently return undefined.
+const OPP={[U]:D,[D]:U,[R]:L,[L]:R},DX={[U]:0,[R]:1,[D]:0,[L]:-1},DY={[U]:-1,[R]:0,[D]:1,[L]:0};
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ lEl=document.getElementById("l"),mEl=document.getElementById("m"),kEl=document.getElementById("k"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+let W=0,H=0,CELL=0,OX=0,OY=0,PIX=1;
+function layout(){
+  const aw=innerWidth,ah=innerHeight;
+  let h=Math.min(ah,900),w=h*0.75;if(w>aw){w=aw;h=w/0.75}
+  W=Math.round(w);H=Math.round(h);PIX=H/640;
+  cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+  document.documentElement.style.fontSize=Math.max(14,Math.round(17*PIX))+"px";
+  fit();draw()}
+function fit(){if(!sim.grid)return;CELL=Math.floor(Math.min(W,H*0.72)/sim.n);OX=Math.round((W-CELL*sim.n)/2);OY=Math.round((H-CELL*sim.n)/2)}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{
+  if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Space"].includes(e.code))e.preventDefault();
+  if(e.code==="Space"&&sim.state==="won")sim.next()},{passive:false});
+cv.addEventListener("pointerdown",e=>{e.preventDefault();sim.tap(e)},{passive:false});
+
+function rot(mask,times){let m=mask;for(let i=0;i<((times%4)+4)%4;i++){
+  let n=0;if(m&U)n|=R;if(m&R)n|=D;if(m&D)n|=L;if(m&L)n|=U;m=n}return m}
+
+const sim={
+  n:5,level:1,seed:1,state:"ready",grid:null,sol:null,src:0,bulbs:[],moves:0,totalMoves:0,
+  best:+(store("fl_best")||0),
+  // Levels are carved as a random spanning tree, so the un-rotated configuration
+  // is always a solution; the scramble only rotates tiles, which the player can
+  // undo. Generation and the win test are then cross-checked against each other.
+  gen(seed,level){
+    this.seed=seed;this.level=level;
+    this.n=Math.min(9,5+Math.floor((level-1)/3));
+    const rnd=rng32(seed*2654435761+level*40503),n=this.n,N=n*n;
+    const sol=new Array(N).fill(0),seen=new Array(N).fill(false),stack=[];
+    this.src=Math.floor(n/2)*n+0;
+    seen[this.src]=true;stack.push(this.src);
+    while(stack.length){
+      const cur=stack[stack.length-1],cxp=cur%n,cyp=Math.floor(cur/n),nbrs=[];
+      if(cyp>0)nbrs.push([cur-n,U,D]);
+      if(cyp<n-1)nbrs.push([cur+n,D,U]);
+      if(cxp>0)nbrs.push([cur-1,L,R]);
+      if(cxp<n-1)nbrs.push([cur+1,R,L]);
+      let moved=false;
+      for(let i=nbrs.length-1;i>0;i--){const j=Math.floor(rnd()*(i+1));const t=nbrs[i];nbrs[i]=nbrs[j];nbrs[j]=t}
+      for(const [nb,a,b] of nbrs) if(!seen[nb]){seen[nb]=true;sol[cur]|=a;sol[nb]|=b;stack.push(nb);moved=true}
+      if(!moved)stack.pop()}
+    this.sol=sol;
+    this.bulbs=[];for(let i=0;i<N;i++)if(i!==this.src&&(sol[i]&(sol[i]-1))===0)this.bulbs.push(i);
+    let scram=0;this.grid=sol.map((m,i)=>{const t=Math.floor(rnd()*4);if(t!==0)scram++;return rot(m,t)});
+    this.scrambledTiles=scram;this.moves=0;this.state="ready";sdkEvent("LoadingStop");fit();return this},
+  tap(e){
+    if(this.state==="won"){this.next();return}
+    if(this.state==="ready")this.start();
+    const x=e.clientX-cv.getBoundingClientRect().left,y=e.clientY-cv.getBoundingClientRect().top;
+    const c=Math.floor((x-OX)/CELL),r=Math.floor((y-OY)/CELL);
+    if(c<0||r<0||c>=this.n||r>=this.n)return;
+    const i=r*this.n+c;this.grid[i]=rot(this.grid[i],1);this.moves++;this.totalMoves++;
+    hintEl.style.display="none";this.check();draw()},
+  // Flow fill + leak count, computed from the current masks only.
+  check(){
+    const n=this.n,N=n*n,fill=new Array(N).fill(false),q=[this.src];fill[this.src]=true;
+    let leaks=0;
+    while(q.length){const i=q.pop(),x=i%n,y=Math.floor(i/n),m=this.grid[i];
+      for(const d of [U,R,D,L]){
+        if(!(m&d))continue;
+        const nx=x+DX[d],ny=y+DY[d];
+        if(nx<0||ny<0||nx>=n||ny>=n){leaks++;continue}
+        const j=ny*n+nx;
+        if(this.grid[j]&OPP[d]){if(!fill[j]){fill[j]=true;q.push(j)}}else leaks++}}
+    this.fill=fill;this.leaks=leaks;
+    const lit=this.bulbs.every(b=>fill[b]);
+    if(lit&&leaks===0&&this.state!=="won"){
+      this.state="won";sdkEvent("GameplayEnd");
+      const score=this.level*1000-this.moves*5;if(score>this.best){this.best=score;store("fl_best",String(score))}
+      oht.textContent="ALL NODES FILLED";stEl.textContent="LEVEL "+this.level+"  ·  MOVES "+this.moves+"  ·  SCORE "+score;
+      overEl.classList.add("on");
+      try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}}
+    return {lit,leaks,done:lit&&leaks===0}},
+  start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+  next(){overEl.classList.remove("on");this.gen(this.seed,this.level+1);this.start();draw()},
+  restart(){this.gen(this.seed,this.level);this.start();draw()},
+  // The generator's promise, restated through the win test itself.
+  verify(){
+    const keep=this.grid.slice();this.grid=this.sol.slice();
+    const r=this.check();const solLeaks=this.leaks,solFilled=this.fill.filter(Boolean).length;
+    const movesToScramble=this.grid.map((m,i)=>{for(let t=0;t<4;t++)if(rot(m,t)===keep[i])return t;return 0});
+    this.grid=keep;this.check();
+    // leaks/filled must be sampled while the solution is still on the board;
+    // reading them after the restore reported the scrambled state instead.
+    return {solutionWin:r.done,leaksAtSolution:solLeaks,filledAtSolution:solFilled,
+      tiles:this.sol.length,nodes:this.bulbs.length,
+      minMoves:movesToScramble.reduce((a,b)=>a+b,0)}},
+  probe(){const v=this.verify();return {state:this.state,level:this.level,n:this.n,
+    tiles:this.n*this.n,nodes:this.bulbs.length,scrambledTiles:this.scrambledTiles,
+    minMoves:v.minMoves,solutionWin:v.solutionWin,leaksAtSolution:v.leaksAtSolution,
+    moves:this.moves,leaks:this.leaks,fps:Math.round(fps),stage:[W,H],best:this.best}}
+};
+function draw(){
+  cx.fillStyle="#0b1220";cx.fillRect(0,0,W,H);
+  if(!sim.grid)return;
+  const lw=Math.max(3,CELL*0.16);
+  for(let i=0;i<sim.grid.length;i++){
+    const x=OX+(i%sim.n)*CELL,y=OY+Math.floor(i/sim.n)*CELL,m=sim.grid[i],lit=sim.fill&&sim.fill[i];
+    cx.strokeStyle=lit?"#5cc8ff":"#2c3a55";cx.lineWidth=lw;cx.lineCap="round";
+    for(const d of [U,R,D,L])if(m&d){cx.beginPath();cx.moveTo(x+CELL/2,y+CELL/2);
+      cx.lineTo(x+CELL/2+DX[d]*CELL/2,y+CELL/2+DY[d]*CELL/2);cx.stroke()}
+    cx.fillStyle=i===sim.src?"#ffd166":(sim.bulbs.indexOf(i)>=0?(lit?"#57d38c":"#33506b"):"#0b1220");
+    cx.beginPath();cx.arc(x+CELL/2,y+CELL/2,lw*0.72,0,6.284);cx.fill()}
+  lEl.textContent=sim.level;mEl.textContent=sim.moves;kEl.textContent=sim.leaks===undefined?0:sim.leaks}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){
+  if(t0===null)t0=now;frames++;
+  if(sim.state==="running"){const step=Math.min(now-last,100);void step}
+  last=now;
+  if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
+  requestAnimationFrame(loop)}
+window.__game=sim;
+sim.gen(1,1);sim.check();layout();requestAnimationFrame(loop);
+</script></body></html>
