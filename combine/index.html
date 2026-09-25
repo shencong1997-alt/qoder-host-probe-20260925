@@ -137,10 +137,8 @@ const sim={
  probe(){return {state:this.state,score:this.score,moves:this.moves,max:Math.max.apply(null,this.board),
   sum:this.sum(),board:this.board.slice(),best:this.best,hasMove:this.hasMove(),
   fps:Math.round(fps),stage:[W,H],cells:{cell:CELL,ox:OX,oy:OY,n:N}}},
- // Greedy policy used by the reachability assertion: pick the move that keeps the
-  // biggest tile stable, prefers merging, and avoids filling the corner.
-  // Greedy lookahead used by the reachability assertion: try each direction on a
-  // scratch copy, keep the one that grows the largest tile with the fewest misses.
+ // Greedy lookahead used by the reachability assertion and the preview driver: try
+ // each direction on a scratch copy, keep the one that grows the largest tile.
   play(limit){let guard=0;
    while(this.state==="running"&&guard++<limit){
     let best=null;
