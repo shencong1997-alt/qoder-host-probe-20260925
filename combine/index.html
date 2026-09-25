@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Combine Ten</title>
+<meta name="description" content="Slide the grid, merge equal tiles once per move, and reach the 256 tile. Undo is always available.">
+<script src="https://sdk.crazygames.com/crazygames-sdk-v2.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none}
+html,body{width:100%;height:100%;overflow:hidden;background:#0a0d13;
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#e8ecf4}
+#wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+canvas{display:block;background:#101725}
+#hud{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+  padding:2.4% 3%;font-size:17px;font-weight:700;pointer-events:none;font-variant-numeric:tabular-nums;text-shadow:0 1px 3px #000}
+#hint{position:absolute;left:0;right:0;bottom:12%;text-align:center;font-size:min(4.4vw,18px);color:#cfd8ea;pointer-events:none}
+#mute,#undo{position:absolute;top:9%;padding:1% 2.2%;border:0;border-radius:9px;background:rgba(16,23,37,.82);
+  color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute{right:1.5%}#undo{left:1.5%}
+#over{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  background:rgba(10,13,19,.88);text-align:center;padding:6%}
+#over.on{display:flex}
+#over h2{font-size:min(8vw,40px);margin:0}
+#over .stats{font-size:min(4.6vw,20px);color:#cfd8ea}
+</style></head>
+<body>
+<div id="wrap">
+  <canvas id="cv" width="420" height="560"></canvas>
+  <div id="hud"><span>SCORE <b id="s">0</b></span><span>MAX <b id="x">0</b></span><span>MOVES <b id="v">0</b></span></div>
+  <div id="hint">Swipe or use arrow keys. Equal tiles merge once per move.</div>
+  <div id="over"><h2 id="oht">BOARD LOCKED</h2><p class="stats" id="stats"></p><p style="color:#9aa6bd;font-size:min(4vw,17px)">TAP or SPACE for a new board</p></div>
+</div>
+<script>
+"use strict";
+const N=4, WIN=256;
+const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
+ sEl=document.getElementById("s"),xEl=document.getElementById("x"),vEl=document.getElementById("v"),
+ overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
+function rng32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function sdkEvent(n){try{if(CG&&CG.SDK&&typeof CG.SDK[n]==="function")CG.SDK[n]()}catch(e){}}
+function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
+let W=0,H=0,CELL=0,OX=0,OY=0,PIX=1,SHAKE=0;
+function layout(){const aw=innerWidth,ah=innerHeight;let h=Math.min(ah,900),w=h*0.75;
+ if(w>aw){w=aw;h=w/0.75}W=Math.round(w);H=Math.round(h);PIX=H/560;
+ cv.width=W;cv.height=H;cv.style.width=W+"px";cv.style.height=H+"px";
+ document.documentElement.style.fontSize=Math.max(13,Math.round(17*PIX))+"px";
+ CELL=Math.floor(Math.min(W,H*0.66)/N);OX=Math.round((W-CELL*N)/2);OY=Math.round((H-CELL*N)/2)+Math.round(H*0.04);draw()}
+addEventListener("resize",layout);
+addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+addEventListener("keydown",e=>{const map={ArrowLeft:"left",ArrowRight:"right",ArrowUp:"up",ArrowDown:"down"};
+ if(map[e.code]||e.code==="Space")e.preventDefault();
+ if(map[e.code])sim.move(map[e.code]);
+ else if(e.code==="Space"&&(sim.state==="over"||sim.state==="won"))sim.newBoard()},{passive:false});
+let sx=0,sy=0;
+cv.addEventListener("pointerdown",e=>{sx=e.clientX;sy=e.clientY;
+ if(sim.state==="over"||sim.state==="won"){sim.newBoard();return}},{passive:true});
+cv.addEventListener("pointerup",e=>{const dx=e.clientX-sx,dy=e.clientY-sy;
+ if(Math.abs(dx)<18&&Math.abs(dy)<18)return;
+ sim.move(Math.abs(dx)>Math.abs(dy)?(dx>0?"right":"left"):(dy>0?"down":"up"))},{passive:true});
+
+const SFXN=["merge","pop","win"];const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,bufs={},muted=store("ct_muted")==="1";
+const muteEl=document.createElement("button");muteEl.id="mute";muteEl.type="button";
+const undoEl=document.createElement("button");undoEl.id="undo";undoEl.type="button";undoEl.textContent="UNDO";
+document.getElementById("wrap").appendChild(muteEl);document.getElementById("wrap").appendChild(undoEl);
+function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
+function audioWake(){if(actx||!AC)return;try{actx=new AC();for(const n of SFXN)
+ fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>bufs[n]=a).catch(()=>{})}catch(e){actx=null}}
+function sfx(n,v){if(muted||!actx||!bufs[n])return;try{const s=actx.createBufferSource(),g=actx.createGain();
+ s.buffer=bufs[n];g.gain.value=v===undefined?0.4:v;s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("ct_muted",muted?"1":"0");renderMute()});
+undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.state="paused"});
+
+function slide(line){                       // one row/col toward index 0
+  const kept=line.filter(v=>v!==0);const out=[];let gain=0,merged=0;
+  for(let i=0;i<kept.length;i++){
+    if(i+1<kept.length&&kept[i]===kept[i+1]){out.push(kept[i]*2);gain+=kept[i]*2;merged++;i++}
+    else out.push(kept[i])}
+  while(out.length<N)out.push(0);
+  return {row:out,gain,merged}}
+function rot(g,dir){const o=new Array(N*N).fill(0);for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+  let rr=r,cc=c;
+  if(dir==="right"){rr=r;cc=N-1-c} else if(dir==="up"){rr=c;cc=N-1-r} else if(dir==="down"){rr=N-1-c;cc=r}
+  o[rr*N+cc]=g[r*N+c]}return o}
+const sim={
+ seed:1,board:[],prev:null,score:0,moves:0,state:"ready",best:+(store("ct_best")||0),
+ newBoard(seed){this.seed=seed||this.seed;const rnd=rng32(this.seed*2654435761+7);
+  this.board=new Array(N*N).fill(0);let placed=0;
+  while(placed<2){const i=Math.floor(rnd()*N*N);if(this.board[i]===0){this.board[i]=rnd()<0.15?4:2;placed++}}
+  this.prev=null;this.score=0;this.moves=0;this.state="ready";
+  sdkEvent("LoadingStop");overEl.classList.remove("on");hintEl.style.display="";return this},
+ spawn(){const empty=[];for(let i=0;i<N*N;i++)if(this.board[i]===0)empty.push(i);
+  if(!empty.length)return null;const rnd=rng32(this.seed*40503+this.moves*2246821+1);
+  const i=empty[Math.floor(rnd()*empty.length)];this.board[i]=rnd()<0.1?4:2;return {i,v:this.board[i]}},
+ move(dir){
+  if(this.state==="over"||this.state==="won"){this.newBoard();return true}
+  if(this.state!=="running")this.start();
+  const before=this.board.slice(), beforeScore=this.score, beforeMoves=this.moves;
+  // Orient so a slide is always "toward index 0", collapse the lines, then undo
+  // the orientation. right/left are involutions and up/down are each other's
+  // inverse, which is asserted in the test suite rather than assumed.
+  const oriented=dir==="left"?before:rot(before,dir);
+  const res=[];for(let r=0;r<N;r++)res.push(slide(oriented.slice(r*N,r*N+N)));
+  const flat=[];res.forEach((L,r)=>L.row.forEach((v,c)=>flat[r*N+c]=v));
+  const un={left:"left",right:"right",up:"down",down:"up"}[dir];
+  const grid=un==="left"?flat:rot(flat,un);
+  let gain=0,merged=0;res.forEach(L=>{gain+=L.gain;merged+=L.merged});
+  const same=grid.every((v,i)=>v===before[i]);
+  if(same)return false;
+  this.prev={board:before,score:beforeScore,moves:beforeMoves};
+  this.board=grid;this.score+=gain;this.moves++;this.lastMerged=merged;
+  if(gain>0){sfx("merge",0.4);SHAKE=3*PIX}else sfx("pop",0.25);
+  hintEl.style.display="none";
+  if(Math.max.apply(null,grid)>=WIN&&this.state!=="won"){this.state="won";this.finish("256 TILE");try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}return true}
+  if(!this.hasMove()){this.state="over";this.finish("NO MOVES LEFT");return true}
+  this.spawn();draw();return true},
+ hasMove(){for(let i=0;i<N*N;i++){if(this.board[i]===0)return true;
+   const r=Math.floor(i/N),c=i%N;
+   if(c+1<N&&this.board[i]===this.board[r*N+c+1])return true;
+   if(r+1<N&&this.board[i]===this.board[(r+1)*N+c])return true}
+  return false},
+ finish(why){sdkEvent("GameplayEnd");if(this.score>this.best){this.best=this.score;store("ct_best",String(this.score))}
+  oht.textContent=why;stEl.textContent="SCORE "+this.score+"  ·  MOVES "+this.moves+"  ·  MAX "+Math.max.apply(null,this.board);
+  overEl.classList.add("on");sfx("win",0.5);
+  try{if(CG&&CG.SDK&&CG.SDK.requestAd)CG.SDK.requestAd("midgame")}catch(e){}},
+ start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
+ undo(){if(!this.prev)return;this.board=this.prev.board;this.score=this.prev.score;this.moves=this.prev.moves;
+  this.prev=null;if(this.state==="over"||this.state==="won"){this.state="running";overEl.classList.remove("on")}
+  this.checkpoint();draw();sfx("pop",0.2);return true},
+ checkpoint(){this.cp={board:this.board.slice(),score:this.score,moves:this.moves}},
+ restore(){if(!this.cp)return;this.board=this.cp.board.slice();this.score=this.cp.score;this.moves=this.cp.moves;
+  this.state="running";overEl.classList.remove("on");draw()},
+ sum(){return this.board.reduce((a,b)=>a+b,0)},
+ probe(){return {state:this.state,score:this.score,moves:this.moves,max:Math.max.apply(null,this.board),
+  sum:this.sum(),board:this.board.slice(),best:this.best,hasMove:this.hasMove(),
+  fps:Math.round(fps),stage:[W,H],cells:{cell:CELL,ox:OX,oy:OY,n:N}}},
+ // Greedy policy used by the reachability assertion: pick the move that keeps the
+  // biggest tile stable, prefers merging, and avoids filling the corner.
+  // Greedy lookahead used by the reachability assertion: try each direction on a
+  // scratch copy, keep the one that grows the largest tile with the fewest misses.
+  play(limit){let guard=0;
+   while(this.state==="running"&&guard++<limit){
+    let best=null;
+    for(const d of ["left","right","up","down"]){
+     this.checkpoint();
+     const moved=this.move(d);
+     const sc=moved?(Math.max.apply(null,this.board)-this.board.filter(v=>v===0).length*0.35+this.score/1000):-1e9;
+     this.restore();
+     if(moved&&(!best||sc>best.sc))best={d,sc}}
+    if(!best){this.state="over";this.finish("NO MOVES LEFT");break}
+    this.move(best.d)}},
+ scoreOf(){return this.score}
+};
+const COLORS={2:"#2f4b6e",4:"#2f6b6e",8:"#2f8b52",16:"#6f8b2f",32:"#b07a1e",64:"#c1571f",128:"#cf2f4d",256:"#ffd166",512:"#5cc8ff",1024:"#a06bff",2048:"#ff6b5b"};
+function draw(){
+ cx.fillStyle="#101725";cx.fillRect(0,0,W,H);
+ cx.save();if(SHAKE>0.3){cx.translate((Math.random()-.5)*SHAKE,(Math.random()-.5)*SHAKE);SHAKE*=.85}else SHAKE=0;
+ for(let i=0;i<N*N;i++){const r=Math.floor(i/N),c=i%N,x=OX+c*CELL,y=OY+r*CELL,v=sim.board[i];
+  cx.fillStyle="#18202e";cx.fillRect(x+2,y+2,CELL-4,CELL-4);
+  if(v){cx.fillStyle=COLORS[v]||"#ff6b5b";const pad=CELL*0.09;cx.fillRect(x+pad,y+pad,CELL-2*pad,CELL-2*pad);
+   cx.fillStyle="#0a0d13";cx.font="800 "+Math.round(CELL*(v<100?0.4:v<1000?0.32:0.25))+"px system-ui";
+   cx.textAlign="center";cx.textBaseline="middle";cx.fillText(String(v),x+CELL/2,y+CELL/2)}}
+ cx.restore();
+ sEl.textContent=sim.score;xEl.textContent=Math.max.apply(null,sim.board);vEl.textContent=sim.moves}
+let frames=0,t0=null,last=performance.now(),fps=0;
+function loop(now){if(t0===null)t0=now;frames++;last=now;
+ if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}draw();requestAnimationFrame(loop)}
+window.__game=sim;window.COMBINE={N,WIN,slide,rot};
+sim.newBoard(1);layout();renderMute();requestAnimationFrame(loop);
+</script></body></html>
