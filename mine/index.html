@@ -121,7 +121,7 @@ const sim={
   probe(){return {state:this.state,ore:+this.ore.toFixed(1),depth:+this.depth.toFixed(1),total:+this.total.toFixed(1),
     rate:+this.rate().toFixed(2),owned:this.owned.slice(),prestiges:this.prestiges,mult:this.mult,best:this.best,
     costs:RIGS.map((r,i)=>this.cost(i)),paybacks:RIGS.map((r,i)=>+this.payback(i).toFixed(2)),
-    fps:Math.round(fps),stage:[W,H],btns:BTN.map(b=>({i:b.i,x:b.x,y:b.y,w:b.w,h:b.h}))}}
+    fps:Math.round(fps),stage:[W,H],core:CORE,rigs:RIGS.length,btns:BTN.map(b=>({i:b.i,x:b.x,y:b.y,w:b.w,h:b.h}))}}
 };
 sim.click=sim.tapTo;                          // pointer routing goes through the buttons
 let frames=0,t0=null,acc=0,last=performance.now(),fps=0;
