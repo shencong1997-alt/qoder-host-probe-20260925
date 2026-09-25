@@ -23,6 +23,8 @@ canvas{display:block;background:#0b1220}
 #over h2{font-size:min(8vw,40px);margin:0}
 #over .stats{font-size:min(5vw,21px);color:#cfd8ea}
 #over .hint{font-size:min(4vw,17px);color:#9aa6bd}
+#mute,#undo,#hintbtn{position:absolute;top:1.5%;padding:1.2% 2.2%;border:0;border-radius:9px;background:rgba(13,18,32,.78);color:#e8ecf4;font-size:15px;cursor:pointer}
+#mute{right:1.5%}#undo{left:1.5%}#hintbtn{left:20%}
 </style></head>
 <body>
 <div id="wrap">
@@ -63,6 +65,27 @@ cv.addEventListener("pointerdown",e=>{e.preventDefault();sim.tap(e)},{passive:fa
 function rot(mask,times){let m=mask;for(let i=0;i<((times%4)+4)%4;i++){
   let n=0;if(m&U)n|=R;if(m&R)n|=D;if(m&D)n|=L;if(m&L)n|=U;m=n}return m}
 
+
+const SFXN=["rot","win"];
+const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,bufs={},muted=store("fl_muted")=="1",shake=0;
+const muteEl=document.createElement("button");
+muteEl.id="mute";muteEl.type="button";muteEl.setAttribute("aria-label","toggle sound");
+document.getElementById("wrap").appendChild(muteEl);
+function audioWake(){if(actx||!AC)return;try{actx=new AC();
+ for(const n of SFXN)fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>bufs[n]=a).catch(()=>{})}catch(e){actx=null}}
+function sfx(n,v){if(muted||!actx||!bufs[n])return;try{const s=actx.createBufferSource(),g=actx.createGain();
+ s.buffer=bufs[n];g.gain.value=v===undefined?0.5:v;s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("fl_muted",muted?"1":"0");renderMute()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.pause()});
+
+const undoEl=document.createElement("button");undoEl.id="undo";undoEl.type="button";undoEl.textContent="UNDO";
+const hintBtn=document.createElement("button");hintBtn.id="hintbtn";hintBtn.type="button";hintBtn.textContent="HINT";
+document.getElementById("wrap").appendChild(undoEl);document.getElementById("wrap").appendChild(hintBtn);
+undoEl.addEventListener("click",e=>{e.stopPropagation();sim.undo()});
+hintBtn.addEventListener("click",e=>{e.stopPropagation();sim.hint()});
 const sim={
   n:5,level:1,seed:1,state:"ready",grid:null,sol:null,src:0,bulbs:[],moves:0,totalMoves:0,
   best:+(store("fl_best")||0),
@@ -89,15 +112,31 @@ const sim={
     this.sol=sol;
     this.bulbs=[];for(let i=0;i<N;i++)if(i!==this.src&&(sol[i]&(sol[i]-1))===0)this.bulbs.push(i);
     let scram=0;this.grid=sol.map((m,i)=>{const t=Math.floor(rnd()*4);if(t!==0)scram++;return rot(m,t)});
-    this.scrambledTiles=scram;this.moves=0;this.state="ready";sdkEvent("LoadingStop");fit();return this},
+    this.scrambledTiles=scram;this.moves=0;this.hist=[];this.hinted=null;this.state="ready";sdkEvent("LoadingStop");fit();return this},
+  pushHist(i){this.hist.push({i,before:this.grid[i],leaks:this.leaks});if(this.hist.length>400)this.hist.shift()},
+  undo(){if(!this.hist||!this.hist.length||this.state==="won")return;const h=this.hist.pop();
+    this.grid[h.i]=h.before;this.moves=Math.max(0,this.moves-1);this.totalMoves=Math.max(0,this.totalMoves-1);
+    this.hinted=null;this.check();draw();sfx("rot",0.3)},
+  // A hint that just rotates once does not necessarily help; the useful semantic
+  // is "set this tile to its solution orientation", charged at the real click cost.
+  hint(){if(!this.grid)return;const bad=this.grid.map((m,i)=>m!==this.sol[i]?i:-1).filter(i=>i>=0);
+    if(!bad.length)return;let need=0,pick=bad[0];
+    for(const i of bad){for(let t=1;t<4;t++)if(rot(this.grid[i],t)===this.sol[i]){need=t;pick=i;break}}
+    this.hinted=pick;this.pushHist(pick);
+    this.grid[pick]=rot(this.grid[pick],need);this.moves+=need;this.totalMoves+=need;
+    this.check();if(this.state==="won")sfx("win",0.5);else sfx("rot",0.4);draw();
+    return {tile:pick,clicks:need}},
   tap(e){
     if(this.state==="won"){this.next();return}
     if(this.state==="ready")this.start();
     const x=e.clientX-cv.getBoundingClientRect().left,y=e.clientY-cv.getBoundingClientRect().top;
     const c=Math.floor((x-OX)/CELL),r=Math.floor((y-OY)/CELL);
     if(c<0||r<0||c>=this.n||r>=this.n)return;
-    const i=r*this.n+c;this.grid[i]=rot(this.grid[i],1);this.moves++;this.totalMoves++;
-    hintEl.style.display="none";this.check();draw()},
+    const i=r*this.n+c;this.pushHist(i);
+    this.grid[i]=rot(this.grid[i],1);this.moves++;this.totalMoves++;this.hinted=null;
+    hintEl.style.display="none";sfx("rot",0.3);this.check();
+    if(this.state==="won")sfx("win",0.55);
+    draw()},
   // Flow fill + leak count, computed from the current masks only.
   check(){
     const n=this.n,N=n*n,fill=new Array(N).fill(false),q=[this.src];fill[this.src]=true;
@@ -157,5 +196,5 @@ function loop(now){
   if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
   requestAnimationFrame(loop)}
 window.__game=sim;
-sim.gen(1,1);sim.check();layout();requestAnimationFrame(loop);
+sim.gen(1,1);sim.check();layout();renderMute();requestAnimationFrame(loop);
 </script></body></html>
