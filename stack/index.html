@@ -23,6 +23,7 @@ canvas{display:block;background:#0d1420}
 #over h2{font-size:min(9vw,44px);margin:0}
 #over .stats{font-size:min(5vw,21px);color:#cfd8ea;font-variant-numeric:tabular-nums}
 #over .hint{font-size:min(4vw,17px);color:#9aa6bd}
+#mute{position:absolute;top:1.5%;right:1.5%;padding:1.2% 2.4%;min-width:34px;border:0;border-radius:9px;background:rgba(13,18,32,.72);color:#e8ecf4;font-size:15px;cursor:pointer}
 </style></head>
 <body>
 <div id="wrap">
@@ -60,6 +61,22 @@ addEventListener("keydown",e=>{
 cv.addEventListener("pointerdown",e=>{e.preventDefault();sim.drop()},{passive:false});
 
 const ROW_H_RATIO=0.055;
+
+const SFXN=["trim","perfect","die"];
+const AC=window.AudioContext||window.webkitAudioContext;
+let actx=null,bufs={},muted=store("st_muted")=="1",shake=0;
+const muteEl=document.createElement("button");
+muteEl.id="mute";muteEl.type="button";muteEl.setAttribute("aria-label","toggle sound");
+document.getElementById("wrap").appendChild(muteEl);
+function audioWake(){if(actx||!AC)return;try{actx=new AC();
+ for(const n of SFXN)fetch(n+".ogg").then(r=>r.arrayBuffer()).then(b=>actx.decodeAudioData(b)).then(a=>bufs[n]=a).catch(()=>{})}catch(e){actx=null}}
+function sfx(n,v){if(muted||!actx||!bufs[n])return;try{const s=actx.createBufferSource(),g=actx.createGain();
+ s.buffer=bufs[n];g.gain.value=v===undefined?0.5:v;s.connect(g);g.connect(actx.destination);s.start()}catch(e){}}
+function renderMute(){muteEl.textContent=muted?"SOUND OFF":"SOUND ON";muteEl.style.opacity=muted?.55:1}
+muteEl.addEventListener("click",e=>{e.stopPropagation();muted=!muted;store("st_muted",muted?"1":"0");renderMute()});
+addEventListener("pointerdown",audioWake);addEventListener("keydown",audioWake);
+document.addEventListener("visibilitychange",()=>{if(document.hidden&&sim.state==="running")sim.pause()});
+
 const sim={
   seed:1,rng:null,state:"ready",rows:0,perfect:0,best:+(store("st_best")||0),
   stack:[],cur:null,dir:1,speed:2.4,rowH:0,framesToLoss:-1,frame:0,
@@ -101,13 +118,13 @@ const sim={
     if(e.miss){this.lose(e);return}
     const top=this.stack[this.stack.length-1];
     const lo=Math.max(top.x,this.cur.x),hi=Math.min(top.x+top.w,this.cur.x+this.cur.w);
-    if(e.perfect){this.perfect++;
+    if(e.perfect){this.perfect++;sfx("perfect",0.5);
       // Without a pressure term independent of aim, a consistently in-tolerance
       // player never shrinks and runs never end (measured: hit the 400-row cap).
       const w=this.rows>5?Math.max(8,Math.round(top.w*0.985)):top.w;
       const keepX=this.rows>5?Math.round(top.x+(top.w-w)/2):top.x;
       this.stack.push({x:keepX,w:w});this.score+=3}
-    else this.stack.push({x:lo,w:hi-lo});
+    else {this.stack.push({x:lo,w:hi-lo});sfx("trim",0.45)}
     this.rows++;this.score++;hintEl.style.display="none";SHAKE=e.perfect?0:3*UNIT;
     if(this.rows%5===0)this.speed=Math.min(this.speed*1.06,this.tolNow()*1.05);
     this.spawn();draw();
@@ -116,7 +133,7 @@ const sim={
   lose(e){
     this.state="over";this.framesToLoss=this.frame;
     if(this.score>this.best){this.best=this.score;store("st_best",String(this.score))}
-    sdkEvent("GameplayEnd");SHAKE=14*UNIT;
+    sdkEvent("GameplayEnd");SHAKE=14*UNIT;sfx("die",0.6);
     stEl.textContent="SCORE "+this.score+"  ·  STACK "+this.rows+"  ·  PERFECT "+this.perfect;
     overEl.classList.add("on");
     try{if(CG&&CG.SDK&&CG.SDK.requestAd){this.adRequested=(this.adRequested||0)+1;CG.SDK.requestAd("midgame")}}catch(err){}
@@ -168,5 +185,5 @@ function loop(now){
   if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
   requestAnimationFrame(loop)}
 window.__game=sim;
-sim.reset(1);layout();requestAnimationFrame(loop);
+sim.reset(1);layout();renderMute();requestAnimationFrame(loop);
 </script></body></html>
