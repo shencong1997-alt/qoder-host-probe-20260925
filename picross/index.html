@@ -97,11 +97,13 @@ const sim={
   this.grid=this.target.map(r=>r.map(()=>0));this.mark=this.target.map(r=>r.map(()=>0));
   this.state="ready";sEl.textContent=this.score;xEl.textContent=this.level;vEl.textContent=this.best},
  geom(){const pad=Math.round(Math.min(W,H)*0.03),lh=Math.max(11,Math.round(Math.min(W,H)*0.03));
+  // Clue numbers need a visible gap or "1 2" reads as "12", which is a different puzzle.
+  const gap=Math.max(8,Math.round(lh*0.75));
   let maxR=1;for(const c of this.rows)maxR=Math.max(maxR,c.length);
   let maxC=1;for(const c of this.cols)maxC=Math.max(maxC,c.length);
-  const leftBand=pad+maxR*(lh+5),topBand=pad+maxC*(lh+5);
+  const leftBand=pad+maxR*(lh+gap),topBand=pad+maxC*(lh+gap);
   const cs=Math.max(10,Math.floor(Math.min((W-leftBand-pad*2)/this.m,(H-topBand-pad*2)/this.n)));
-  return {cs:cs,lh:lh,ox:Math.round(leftBand+(W-leftBand-pad-cs*this.m)/2),
+  return {cs:cs,lh:lh,gap:gap,ox:Math.round(leftBand+(W-leftBand-pad-cs*this.m)/2),
     oy:Math.round(topBand+(H-topBand-pad-cs*this.n)/2)}},
  cellAt(x,y){const g=this.geom();const c=Math.floor((x-g.ox)/g.cs),r=Math.floor((y-g.oy)/g.cs);
   if(r<0||c<0||r>=this.n||c>=this.m)return -1;return r*this.m+c},
@@ -186,11 +188,11 @@ function draw(){const g=sim.geom(),cs=g.cs,lh=g.lh;
  cx.font="700 "+lh+"px system-ui";cx.textBaseline="middle";cx.textAlign="right";
  for(let r=0;r<sim.n;r++){const y=g.oy+r*cs+cs/2;let x=g.ox-6;
   cx.fillStyle=sim.rowDone(r)?DONE:"#cfd8ea";
-  for(let k=sim.rows[r].length-1;k>=0;k--){const t=String(sim.rows[r][k]);cx.fillText(t,x,y);x-=cx.measureText(t).width+5}}
+  for(let k=sim.rows[r].length-1;k>=0;k--){const t=String(sim.rows[r][k]);cx.fillText(t,x,y);x-=cx.measureText(t).width+g.gap}}
  cx.textAlign="center";
  for(let c=0;c<sim.m;c++){const x=g.ox+c*cs+cs/2;let y=g.oy-6;
   cx.fillStyle=sim.colDone(c)?DONE:"#cfd8ea";
-  for(let k=sim.cols[c].length-1;k>=0;k--){cx.fillText(String(sim.cols[c][k]),x,y);y-=lh+5}}
+  for(let k=sim.cols[c].length-1;k>=0;k--){cx.fillText(String(sim.cols[c][k]),x,y);y-=lh+g.gap}}
  for(let r=0;r<sim.n;r++)for(let c=0;c<sim.m;c++){const x=g.ox+c*cs,y=g.oy+r*cs;
   const v=sim.grid[r][c],m=sim.mark[r][c];
   cx.fillStyle=v?ON:OFF;cx.fillRect(x+1,y+1,cs-2,cs-2);
