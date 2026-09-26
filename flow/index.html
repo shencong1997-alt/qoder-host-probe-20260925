@@ -115,7 +115,19 @@ const sim={
     this.sol=sol;
     this.bulbs=[];for(let i=0;i<N;i++)if(i!==this.src&&(sol[i]&(sol[i]-1))===0)this.bulbs.push(i);
     let scram=0;this.grid=sol.map((m,i)=>{const t=Math.floor(rnd()*4);if(t!==0)scram++;return rot(m,t)});
-    this.scrambledTiles=scram;this.moves=0;this.hist=[];this.hinted=null;this.state="ready";sdkEvent("LoadingStop");fit();return this},
+    this.scrambledTiles=scram;
+    // A connectivity win test means a "scrambled" board can still be functionally
+    // solved: rotating a straight pipe by 2 changes nothing yet was counted above.
+    // Generation must therefore PROVE the start is unsolved, not assume it.
+    this.allowWin=false;this.state="ready";this.check();
+    let guard=0;
+    while(this.leaks===0&&this.bulbs.every(b=>this.fill[b])&&guard++<12){
+      let moved=false;
+      for(let i=0;i<N;i++){if(rot(this.grid[i],1)!==this.grid[i]){this.grid[i]=rot(this.grid[i],1);scram++;moved=true;break}}
+      if(!moved)break;
+      this.state="ready";this.check();
+    }
+    this.state="ready";this.check();this.allowWin=true;this.moves=0;this.hist=[];this.hinted=null;this.state="ready";sdkEvent("LoadingStop");fit();return this},
   pushHist(i){this.hist.push({i,before:this.grid[i],leaks:this.leaks});if(this.hist.length>400)this.hist.shift()},
   undo(){if(!this.hist||!this.hist.length||this.state==="won")return;const h=this.hist.pop();
     this.grid[h.i]=h.before;this.moves=Math.max(0,this.moves-1);this.totalMoves=Math.max(0,this.totalMoves-1);
@@ -153,7 +165,7 @@ const sim={
         if(this.grid[j]&OPP[d]){if(!fill[j]){fill[j]=true;q.push(j)}}else leaks++}}
     this.fill=fill;this.leaks=leaks;
     const lit=this.bulbs.every(b=>fill[b]);
-    if(lit&&leaks===0&&this.state!=="won"){
+    if(lit&&leaks===0&&this.state!=="won"&&this.allowWin!==false){
       this.state="won";sdkEvent("GameplayEnd");
       const score=this.level*1000-this.moves*5;if(score>this.best){this.best=score;store("fl_best",String(score))}
       oht.textContent="ALL NODES FILLED";stEl.textContent="LEVEL "+this.level+"  ·  MOVES "+this.moves+"  ·  SCORE "+score;
@@ -165,10 +177,13 @@ const sim={
   restart(){this.gen(this.seed,this.level);this.start();draw()},
   // The generator's promise, restated through the win test itself.
   verify(){
+    // Restating the generator through the win test must not be allowed to WIN:
+    // it puts the solution on the board, and check() flips state/overlay as a side effect.
+    const prevWin=this.allowWin;this.allowWin=false;const prevState=this.state;
     const keep=this.grid.slice();this.grid=this.sol.slice();
     const r=this.check();const solLeaks=this.leaks,solFilled=this.fill.filter(Boolean).length;
     const movesToScramble=this.grid.map((m,i)=>{for(let t=0;t<4;t++)if(rot(m,t)===keep[i])return t;return 0});
-    this.grid=keep;this.check();
+    this.grid=keep;this.check();this.state=prevState;this.allowWin=prevWin;
     // leaks/filled must be sampled while the solution is still on the board;
     // reading them after the restore reported the scrambled state instead.
     return {solutionWin:r.done,leaksAtSolution:solLeaks,filledAtSolution:solFilled,
