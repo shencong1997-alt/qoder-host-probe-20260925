@@ -83,7 +83,7 @@ function optimalMoves(perm,size,limit){const goal=[];
   return {moves:path===null?null:path,nodes:nodes}
 }
 
-const SIZES=[3,3,3,4,4,4];
+const SIZES=[3,3,3,4,4,4,5,5,5];
 const sim={
  seed:1,level:1,size:3,perm:[],moves:0,state:"ready",history:[],scrambleLen:0,
  score:0,best:+store("sf_best")||0,
