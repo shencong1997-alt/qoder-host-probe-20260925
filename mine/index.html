@@ -85,7 +85,7 @@ const sim={
   cost(i){return Math.ceil(RIGS[i].base*Math.pow(RIGS[i].mult,this.owned[i]))},
   rate(){let s=0;for(let i=0;i<RIGS.length;i++)s+=RIGS[i].rate*this.owned[i];return s*this.mult},
   payback(i){return this.cost(i)/RIGS[i].rate},           // ore per second it adds
-  buy(i){const c=this.cost(i);if(this.ore<c)return false;this.ore-=c;this.owned[i]++;this.spends++;
+  buy(i){const c=this.cost(i);if(this.ore<c)return false;this.ore-=c;this.owned[i]++;this.spends++;this.save();
     this.ticks++;this.lastBuy={i,cost:c,payback:this.payback(i)};sfx("buy",0.4);this.state="running";hintEl.style.display="none";return true},
   dig(){const g=1+this.owned[0]*0.5;this.ore+=g*this.mult;this.total+=g*this.mult;this.depth+=g*this.mult*0.02;
     if(this.depth>=CORE)this.reach();else sfx("dig",0.25)},
@@ -93,7 +93,7 @@ const sim={
     if(this.total>this.best){this.best=this.total;store("cm_best",String(this.total))}
     stEl.textContent="TOTAL "+fmt(this.total)+" ORE  ·  PRESTIGE "+this.prestiges;overEl.classList.add("on");
     sfx("win",0.5);try{if(CG&&CG.SDK&&CG.SDK.ad)adBreak("midgame")}catch(e){}},
-  prestige(){if(this.state!=="won")return;this.prestiges++;this.mult=1+0.5*this.prestiges;
+  prestige(){if(this.state!=="won")return;this.prestiges++;this.mult=1+0.5*this.prestiges;this.save();
     this.ore=0;this.depth=0;this.owned=[0,0,0,0,0];this.state="running";overEl.classList.remove("on");sdkEvent("GameplayStart")},
   pauseGame(){if(this.state==="running"){this.state="paused";sdkEvent("GameplayEnd")}},
   resume(){if(this.state==="paused"){this.state="running";sdkEvent("GameplayStart")}},
@@ -120,8 +120,8 @@ const sim={
   tapTo(e){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
     for(const b of BTN)if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)return this.buy(b.i);
     this.dig();return true},
-  probe(){return {state:this.state,ore:+this.ore.toFixed(1),depth:+this.depth.toFixed(1),total:+this.total.toFixed(1),
-    rate:+this.rate().toFixed(2),owned:this.owned.slice(),prestiges:this.prestiges,mult:this.mult,best:this.best,
+  save(){try{store("cm_save",JSON.stringify({ore:this.ore,owned:this.owned,prestiges:this.prestiges,mult:this.mult,total:this.total,depth:this.depth}))}catch(e){}},load(){try{var v=store("cm_save");if(!v)return false;var j=JSON.parse(v);if(!j||!Array.isArray(j.owned))return false;this.ore=+j.ore||0;this.owned=j.owned.map(Number);this.prestiges=+j.prestiges||0;this.mult=+j.mult||1;this.total=+j.total||0;this.depth=+j.depth||0;return true}catch(e){return false}},probe(){return {state:this.state,ore:+this.ore.toFixed(1),depth:+this.depth.toFixed(1),total:+this.total.toFixed(1),
+    rate:+this.rate().toFixed(2),owned:this.owned.slice(),prestiges:this.prestiges,mult:this.mult,best:this.best,owned:this.owned.slice(),prestiges:this.prestiges,
     costs:RIGS.map((r,i)=>this.cost(i)),paybacks:RIGS.map((r,i)=>+this.payback(i).toFixed(2)),
     fps:Math.round(fps),stage:[W,H],core:CORE,rigs:RIGS.length,btns:BTN.map(b=>({i:b.i,x:b.x,y:b.y,w:b.w,h:b.h}))}}
 };
@@ -149,5 +149,5 @@ function loop(now){if(t0===null)t0=now;frames++;
   draw();
   if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
   requestAnimationFrame(loop)}
-window.__game=sim;sim.hard();layout();renderMute();requestAnimationFrame(loop);
+window.__game=sim;sim.hard();sim.load();layout();renderMute();requestAnimationFrame(loop);
 </script></body></html>
