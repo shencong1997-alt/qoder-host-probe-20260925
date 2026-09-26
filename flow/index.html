@@ -45,6 +45,7 @@ const cv=document.getElementById("cv"),cx=cv.getContext("2d"),
  lEl=document.getElementById("l"),mEl=document.getElementById("m"),kEl=document.getElementById("k"),
  overEl=document.getElementById("over"),stEl=document.getElementById("stats"),oht=document.getElementById("oht"),hintEl=document.getElementById("hint");
 const CG=(typeof window.CrazyGames!=="undefined")?window.CrazyGames:null;
+function RL(){try{var n=parseInt(store("fl_lvl"),10);return (n>1)?n:1}catch(e){return 1}}
 function adBreak(kind){try{window.__adRequests=(window.__adRequests||0)+1;if(!(CG&&CG.SDK&&CG.SDK.ad&&typeof CG.SDK.ad.requestAd==="function"))return false;CG.SDK.ad.requestAd(kind,{adStarted:function(){window.__adState="started";try{if(actx&&actx.state==="running"){actx.suspend();window.__mutedForAd=true;}}catch(e){}},adFinished:function(){window.__adState="finished";try{if(actx&&window.__mutedForAd&&!muted){actx.resume();}window.__mutedForAd=false;}catch(e){}},adError:function(){window.__adState="error";try{if(actx&&window.__mutedForAd&&!muted){actx.resume();}window.__mutedForAd=false;}catch(e){}}});return true;}catch(e){window.__adState="threw";return false;}}
 function sdkEvent(n){try{if(!(CG&&CG.SDK&&CG.SDK.game))return false;var m={GameplayStart:"gameplayStart",GameplayEnd:"gameplayStop",LoadingStart:"sdkGameLoadingStart",LoadingStop:"sdkGameLoadingStop"}[n];if(m&&typeof CG.SDK.game[m]==="function"){CG.SDK.game[m]();return true;}return false;}catch(e){return false;}}
 function store(k,v){try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){return null}}
@@ -160,7 +161,7 @@ const sim={
       try{if(CG&&CG.SDK&&CG.SDK.ad)adBreak("midgame")}catch(e){}}
     return {lit,leaks,done:lit&&leaks===0}},
   start(){if(this.state==="running")return;this.state="running";sdkEvent("GameplayStart")},
-  next(){overEl.classList.remove("on");this.gen(this.seed,this.level+1);this.start();draw()},
+  next(){overEl.classList.remove("on");this.gen(this.seed,this.level+1);store("fl_lvl",String(this.level));this.start();draw()},
   restart(){this.gen(this.seed,this.level);this.start();draw()},
   // The generator's promise, restated through the win test itself.
   verify(){
@@ -198,5 +199,5 @@ function loop(now){
   if(now-t0>500){fps=frames/((now-t0)/1000);frames=0;t0=null}
   requestAnimationFrame(loop)}
 window.__game=sim;
-sim.gen(1,1);sim.check();layout();renderMute();requestAnimationFrame(loop);
+sim.gen(1,RL());sim.check();layout();renderMute();requestAnimationFrame(loop);
 </script></body></html>
